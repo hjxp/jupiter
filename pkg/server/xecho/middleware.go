@@ -20,8 +20,16 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/douyu/jupiter/pkg/metric"
-	"github.com/douyu/jupiter/pkg/trace"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/alibaba/sentinel-golang/core/base"
+	"github.com/douyu/jupiter/pkg"
+	"github.com/douyu/jupiter/pkg/core/metric"
+	"github.com/douyu/jupiter/pkg/core/sentinel"
+	"github.com/douyu/jupiter/pkg/core/xtrace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/labstack/echo/v4"
@@ -93,22 +101,42 @@ func metricServerInterceptor() echo.MiddlewareFunc {
 		}
 	}
 }
+
 func traceServerInterceptor() echo.MiddlewareFunc {
+	tracer := xtrace.NewTracer(trace.SpanKindServer)
+	attrs := []attribute.KeyValue{
+		semconv.RPCSystemKey.String("http"),
+	}
+
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) (err error) {
-			span, ctx := trace.StartSpanFromContext(
-				c.Request().Context(),
-				c.Request().Method+" "+c.Path(),
-				trace.TagComponent("http"),
-				trace.TagSpanKind("server"),
-				trace.HeaderExtractor(c.Request().Header),
-				trace.CustomTag("http.url", c.Path()),
-				trace.CustomTag("http.method", c.Request().Method),
-				trace.CustomTag("peer.ipv4", c.RealIP()),
-			)
+			ctx, span := tracer.Start(c.Request().Context(), c.Request().URL.Path, propagation.HeaderCarrier(c.Request().Header), trace.WithAttributes(attrs...))
+			span.SetAttributes(semconv.HTTPServerAttributesFromHTTPRequest(pkg.Name(), c.Request().URL.Path, c.Request())...)
+
+			ctx = xlog.NewContext(ctx, xlog.Default(), span.SpanContext().TraceID().String())
+
 			c.SetRequest(c.Request().WithContext(ctx))
-			defer span.Finish()
+			defer span.End()
 			return next(c)
+		}
+	}
+}
+
+func sentinelServerInterceptor() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			entry, blockerr := sentinel.Entry(c.Request().URL.Host,
+				sentinel.WithResourceType(base.ResTypeWeb),
+				sentinel.WithTrafficType(base.Inbound),
+			)
+			if blockerr != nil {
+				return blockerr
+			}
+
+			err := next(c)
+			entry.Exit(sentinel.WithError(err))
+
+			return err
 		}
 	}
 }

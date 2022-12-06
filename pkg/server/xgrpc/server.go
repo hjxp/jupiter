@@ -21,7 +21,7 @@ import (
 	"io/ioutil"
 	"net"
 
-	"github.com/douyu/jupiter/pkg/constant"
+	"github.com/douyu/jupiter/pkg/core/constant"
 	"github.com/douyu/jupiter/pkg/server"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
@@ -92,12 +92,6 @@ func newServer(config *Config) (*Server, error) {
 }
 
 func (s *Server) Healthz() bool {
-	conn, err := s.listener.Accept()
-	if err != nil {
-		return false
-	}
-
-	conn.Close()
 	return true
 }
 

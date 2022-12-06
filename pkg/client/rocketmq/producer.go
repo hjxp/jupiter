@@ -20,12 +20,15 @@ import (
 	"github.com/apache/rocketmq-client-go/v2"
 	"github.com/apache/rocketmq-client-go/v2/primitive"
 	"github.com/apache/rocketmq-client-go/v2/producer"
-	"github.com/douyu/jupiter/pkg/istats"
+	"github.com/douyu/jupiter/pkg/core/hooks"
+	"github.com/douyu/jupiter/pkg/core/istats"
 	"github.com/douyu/jupiter/pkg/util/xdebug"
 	"github.com/douyu/jupiter/pkg/xlog"
 )
 
 type Producer struct {
+	started bool
+
 	rocketmq.Producer
 	name string
 	ProducerConfig
@@ -39,9 +42,6 @@ func StdNewProducer(name string) *Producer {
 
 func (conf *ProducerConfig) Build() *Producer {
 	name := conf.Name
-	if _, ok := _producers.Load(name); ok {
-		xlog.Panic("duplicated load", xlog.String("name", name))
-	}
 
 	if xdebug.IsDevelopmentMode() {
 		xdebug.PrettyJsonPrint("rocketmq's config: "+name, conf)
@@ -61,13 +61,25 @@ func (conf *ProducerConfig) Build() *Producer {
 		},
 	}
 
-	cc.interceptors = append(cc.interceptors, producerDefaultInterceptor(cc), producerMDInterceptor(cc))
+	cc.interceptors = append(cc.interceptors,
+		producerDefaultInterceptor(cc),
+		producerMDInterceptor(cc),
+		producerSentinelInterceptor(cc),
+	)
 
-	_producers.Store(name, cc)
+	// 服务启动前先start
+	hooks.Register(hooks.Stage_BeforeRun, func() {
+		_ = cc.Start()
+	})
+
 	return cc
 }
 
 func (pc *Producer) Start() error {
+	if pc.started {
+		return nil
+	}
+
 	// 兼容配置
 	client, err := rocketmq.NewProducer(
 		producer.WithNameServer(pc.Addr),
@@ -80,7 +92,7 @@ func (pc *Producer) Start() error {
 		}),
 	)
 	if err != nil {
-		xlog.Panic("create producer",
+		xlog.Jupiter().Panic("create producer",
 			xlog.FieldName(pc.name),
 			xlog.FieldExtMessage(pc.ProducerConfig),
 			xlog.Any("error", err),
@@ -88,13 +100,14 @@ func (pc *Producer) Start() error {
 	}
 
 	if err := client.Start(); err != nil {
-		xlog.Panic("start producer",
+		xlog.Jupiter().Panic("start producer",
 			xlog.FieldName(pc.name),
 			xlog.FieldExtMessage(pc.ProducerConfig),
 			xlog.Any("error", err),
 		)
 	}
 
+	pc.started = true
 	pc.Producer = client
 	// 进程退出时，producer不Close，避免消息发失败
 	// defers.Register(pc.Close)
@@ -109,19 +122,19 @@ func (pc *Producer) WithInterceptor(fs ...primitive.Interceptor) *Producer {
 func (pc *Producer) Close() error {
 	err := pc.Shutdown()
 	if err != nil {
-		xlog.Warn("consumer close fail", xlog.Any("error", err.Error()))
+		xlog.Jupiter().Warn("consumer close fail", xlog.Any("error", err.Error()))
 		return err
 	}
-	_producers.Delete(pc.name)
 	return nil
 }
 
 // Send rocketmq发送消息
+// Deprecated: use SendWithContext instead
 func (pc *Producer) Send(msg []byte) error {
 	m := primitive.NewMessage(pc.Topic, msg)
 	_, err := pc.SendSync(context.Background(), m)
 	if err != nil {
-		xlog.Error("send message error", xlog.Any("msg", msg))
+		xlog.Jupiter().Error("send message error", xlog.Any("msg", msg))
 		return err
 	}
 	return nil
@@ -132,13 +145,14 @@ func (pc *Producer) SendWithContext(ctx context.Context, msg []byte) error {
 	m := primitive.NewMessage(pc.Topic, msg)
 	_, err := pc.SendSync(ctx, m)
 	if err != nil {
-		xlog.Error("send message error", xlog.Any("msg", msg))
+		xlog.Jupiter().Error("send message error", xlog.Any("msg", msg))
 		return err
 	}
 	return nil
 }
 
 // SendWithTag rocket mq 发送消息,可以自定义选择 tag
+// Deprecated: use SendWithMsg instead
 func (pc *Producer) SendWithTag(msg []byte, tag string) error {
 	m := primitive.NewMessage(pc.Topic, msg)
 	if tag != "" {
@@ -147,13 +161,14 @@ func (pc *Producer) SendWithTag(msg []byte, tag string) error {
 
 	_, err := pc.SendSync(context.Background(), m)
 	if err != nil {
-		xlog.Error("send message error", xlog.Any("msg", msg))
+		xlog.Jupiter().Error("send message error", xlog.Any("msg", msg))
 		return err
 	}
 	return nil
 }
 
 // SendWithResult rocket mq 发送消息,可以自定义选择 tag 及返回结果
+// Deprecated: use SendWithMsg instead
 func (pc *Producer) SendWithResult(msg []byte, tag string) (*primitive.SendResult, error) {
 	m := primitive.NewMessage(pc.Topic, msg)
 	if tag != "" {
@@ -162,18 +177,19 @@ func (pc *Producer) SendWithResult(msg []byte, tag string) (*primitive.SendResul
 
 	res, err := pc.SendSync(context.Background(), m)
 	if err != nil {
-		xlog.Error("send message error", xlog.Any("msg", msg))
+		xlog.Jupiter().Error("send message error", xlog.Any("msg", msg))
 		return res, err
 	}
 	return res, nil
 }
 
 // SendMsg... 自定义消息格式
+// Deprecated: use SendWithMsg instead.
 func (pc *Producer) SendMsg(msg *primitive.Message) (*primitive.SendResult, error) {
 	msg.Topic = pc.Topic
 	res, err := pc.SendSync(context.Background(), msg)
 	if err != nil {
-		xlog.Error("send message error", xlog.Any("msg", msg))
+		xlog.Jupiter().Error("send message error", xlog.Any("msg", msg))
 		return res, err
 	}
 	return res, nil
@@ -184,7 +200,7 @@ func (pc *Producer) SendWithMsg(ctx context.Context, msg *primitive.Message) err
 	msg.Topic = pc.Topic
 	_, err := pc.SendSync(ctx, msg)
 	if err != nil {
-		xlog.Error("send message error", xlog.Any("msg", msg))
+		xlog.Jupiter().Error("send message error", xlog.Any("msg", msg))
 		return err
 	}
 	return nil

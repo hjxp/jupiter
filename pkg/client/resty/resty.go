@@ -19,20 +19,30 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/alibaba/sentinel-golang/api"
+	"github.com/alibaba/sentinel-golang/core/base"
 	"github.com/douyu/jupiter/pkg/conf"
-	"github.com/douyu/jupiter/pkg/metric"
-	"github.com/douyu/jupiter/pkg/trace"
+	"github.com/douyu/jupiter/pkg/core/constant"
+	"github.com/douyu/jupiter/pkg/core/ecode"
+	"github.com/douyu/jupiter/pkg/core/metric"
+	"github.com/douyu/jupiter/pkg/core/sentinel"
+	"github.com/douyu/jupiter/pkg/core/xtrace"
 	"github.com/douyu/jupiter/pkg/util/xdebug"
-	"github.com/douyu/jupiter/pkg/util/xtime"
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/go-resty/resty/v2"
-	"github.com/opentracing/opentracing-go"
-	"github.com/opentracing/opentracing-go/ext"
+	"github.com/spf13/cast"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
-var _logger = xlog.DefaultLogger.With(xlog.FieldMod("resty"))
 var errSlowCommand = errors.New("http resty slow command")
+
+// Client ...
+type Client = resty.Client
 
 // Config ...
 type (
@@ -61,21 +71,24 @@ type (
 		// 访问日志开关
 		EnableAccessLog bool `json:"enableAccessLog" toml:"enableAccessLog"`
 		// 熔断降级
-		EnableSentinel bool                     `json:"enableSentinel" toml:"enableSentinel"`
+		EnableSentinel bool `json:"enableSentinel" toml:"enableSentinel"`
+		// 重试
 		RetryCondition resty.RetryConditionFunc `json:"-" toml:"-"`
+		// 日志
+		logger *zap.Logger
 	}
 )
 
 // StdConfig 返回标准配置
-func StdConfig(name string) Config {
-	return RawConfig("jupiter.resty." + name)
+func StdConfig(name string) *Config {
+	return RawConfig(constant.ConfigKey("resty." + name))
 }
 
 // RawConfig 返回配置
-func RawConfig(key string) Config {
+func RawConfig(key string) *Config {
 	var config = DefaultConfig()
 	if err := conf.UnmarshalKey(key, &config, conf.TagName("toml")); err != nil {
-		xlog.Panic("unmarshal config", xlog.FieldName(key), xlog.FieldExtMessage(config))
+		xlog.Jupiter().Panic("unmarshal config", xlog.FieldName(key), xlog.FieldExtMessage(config))
 	}
 
 	if xdebug.IsDevelopmentMode() {
@@ -85,19 +98,20 @@ func RawConfig(key string) Config {
 }
 
 // DefaultConfig 返回默认配置
-func DefaultConfig() Config {
-	return Config{
+func DefaultConfig() *Config {
+	return &Config{
 		Debug:            false,
 		EnableMetric:     true,
 		EnableTrace:      true,
 		RetryCount:       0,
-		RetryWaitTime:    xtime.Duration("100ms"),
-		RetryMaxWaitTime: xtime.Duration("100ms"),
+		RetryWaitTime:    cast.ToDuration("100ms"),
+		RetryMaxWaitTime: cast.ToDuration("100ms"),
 		Addr:             "",
-		SlowThreshold:    xtime.Duration("500ms"),
-		Timeout:          xtime.Duration("3000ms"),
+		SlowThreshold:    cast.ToDuration("500ms"),
+		Timeout:          cast.ToDuration("3000ms"),
 		EnableAccessLog:  false,
 		EnableSentinel:   true,
+		logger:           xlog.Jupiter().Named(ecode.ModeClientResty),
 	}
 }
 
@@ -113,7 +127,6 @@ func (config *Config) Build() (*resty.Client, error) {
 	client.SetRetryCount(config.RetryCount)
 	client.SetCloseConnection(config.CloseConnection)
 	client.SetRedirectPolicy(resty.NoRedirectPolicy())
-	client.AddRetryCondition(config.RetryCondition)
 
 	if config.RetryWaitTime != time.Duration(0) {
 		client.SetRetryWaitTime(config.RetryWaitTime)
@@ -125,31 +138,46 @@ func (config *Config) Build() (*resty.Client, error) {
 
 	client.OnError(func(r *resty.Request, err error) {
 		if config.EnableTrace {
-			span := opentracing.SpanFromContext(r.Context())
-			ext.LogError(span, err)
-			span.Finish()
+			span := trace.SpanFromContext(r.Context())
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+			}
+			span.End()
 		}
-
 		if config.EnableMetric {
 			metric.ClientHandleCounter.WithLabelValues(metric.TypeHTTP, "resty", r.Method, r.RawRequest.Host, "error").Inc()
 		}
+
+		if config.EnableSentinel {
+			entry := sentinel.FromContext(r.Context())
+			if entry != nil {
+				entry.Exit(base.WithError(err))
+			}
+		}
+
 	})
+
+	tracer := xtrace.NewTracer(trace.SpanKindClient)
+	attrs := []attribute.KeyValue{
+		semconv.RPCSystemKey.String("http"),
+	}
 
 	client.OnBeforeRequest(func(c *resty.Client, r *resty.Request) error {
 		if config.EnableTrace {
-			// 设置trace
-			span, ctx := trace.StartSpanFromContext(
-				r.Context(),
-				"http_client_request",
-				trace.MetadataExtractor(r.Header),
-			)
 
-			ext.SpanKindRPCClient.Set(span)
-			ext.Component.Set(span, "http")
-			ext.HTTPUrl.Set(span, r.URL)
-			ext.HTTPMethod.Set(span, r.Method)
+			ctx, _ := tracer.Start(r.Context(), r.URL, propagation.HeaderCarrier(r.Header), trace.WithAttributes(attrs...))
 
 			r.SetContext(ctx)
+		}
+
+		if config.EnableSentinel {
+			entry, err := sentinel.Entry(r.URL, api.WithTrafficType(base.Outbound), api.WithResourceType(base.ResTypeWeb))
+			if err != nil {
+				return err
+			}
+
+			r.SetContext(sentinel.WithContext(r.Context(), entry))
 		}
 
 		return nil
@@ -170,19 +198,31 @@ func (config *Config) Build() (*resty.Client, error) {
 		}
 
 		if config.EnableTrace {
-			trace.SpanFromContext(r.Request.Context()).Finish()
+			span := trace.SpanFromContext(r.Request.Context())
+			span.SetAttributes(semconv.HTTPClientAttributesFromHTTPRequest(r.Request.RawRequest)...)
+			span.SetAttributes(
+				semconv.HTTPStatusCodeKey.Int64(int64(r.StatusCode())),
+			)
+			span.End()
 		}
 
 		if config.SlowThreshold > time.Duration(0) {
 			// 慢日志
 			if cost > config.SlowThreshold {
-				_logger.Error("slow",
+				config.logger.Error("slow",
 					xlog.FieldErr(errSlowCommand),
 					xlog.FieldMethod(r.Request.Method),
 					xlog.FieldCost(cost),
 					xlog.FieldAddr(r.Request.URL),
 					xlog.FieldCode(int32(r.StatusCode())),
 				)
+			}
+		}
+
+		if config.EnableSentinel {
+			entry := sentinel.FromContext(r.Request.Context())
+			if entry != nil {
+				entry.Exit()
 			}
 		}
 
@@ -195,7 +235,7 @@ func (config *Config) Build() (*resty.Client, error) {
 func (c *Config) MustBuild() *resty.Client {
 	cc, err := c.Build()
 	if err != nil {
-		xlog.Panic("resty build failed", zap.Error(err))
+		c.logger.Panic("resty build failed", zap.Error(err), zap.Any("config", c))
 	}
 
 	return cc

@@ -20,15 +20,16 @@ import (
 	"github.com/apache/rocketmq-client-go/v2"
 	"github.com/apache/rocketmq-client-go/v2/consumer"
 	"github.com/apache/rocketmq-client-go/v2/primitive"
-	"github.com/douyu/jupiter/pkg/defers"
-	"github.com/douyu/jupiter/pkg/istats"
-	"github.com/douyu/jupiter/pkg/trace"
+	"github.com/douyu/jupiter/pkg/core/hooks"
+	"github.com/douyu/jupiter/pkg/core/istats"
+	"github.com/douyu/jupiter/pkg/core/xtrace"
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/juju/ratelimit"
-	"github.com/opentracing/opentracing-go"
-	"github.com/opentracing/opentracing-go/ext"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
-	"google.golang.org/grpc/metadata"
 )
 
 type PushConsumer struct {
@@ -40,20 +41,13 @@ type PushConsumer struct {
 	interceptors []primitive.Interceptor
 	fInfo        FlowInfo
 	bucket       *ratelimit.Bucket
+	started      bool
 }
 
 func (conf *ConsumerConfig) Build() *PushConsumer {
 	name := conf.Name
-	if _, ok := _consumers.Load(name); ok {
-		xlog.Panic("duplicated load", xlog.String("name", name))
-	}
 
-	xlog.Debug("rocketmq's config: ", xlog.String("name", name), xlog.Any("conf", conf))
-
-	var bucket *ratelimit.Bucket
-	if conf.Rate > 0 && conf.Capacity > 0 {
-		bucket = ratelimit.NewBucketWithRate(conf.Rate, conf.Capacity)
-	}
+	xlog.Jupiter().Debug("rocketmq's config: ", xlog.String("name", name), xlog.Any("conf", conf))
 
 	cc := &PushConsumer{
 		name:           name,
@@ -68,20 +62,29 @@ func (conf *ConsumerConfig) Build() *PushConsumer {
 			Group:        conf.Group,
 			GroupType:    "consumer",
 		},
-		bucket: bucket,
 	}
-	cc.interceptors = append(cc.interceptors, pushConsumerDefaultInterceptor(cc), pushConsumerMDInterceptor(cc))
+	cc.interceptors = append(cc.interceptors,
+		pushConsumerDefaultInterceptor(cc),
+		pushConsumerMDInterceptor(cc),
+		pushConsumerSentinelInterceptor(cc),
+	)
 
-	_consumers.Store(name, cc)
+	// 服务启动前先start
+	hooks.Register(hooks.Stage_BeforeRun, func() {
+		err := cc.Start()
+		if err != nil {
+			xlog.Jupiter().Panic("rocketmq consumer start fail", zap.Error(err))
+		}
+	})
+
 	return cc
 }
 
 func (cc *PushConsumer) Close() {
 	err := cc.Shutdown()
 	if err != nil {
-		xlog.Warn("consumer close fail", zap.Error(err))
+		xlog.Jupiter().Warn("consumer close fail", zap.Error(err))
 	}
-	_consumers.Delete(cc.name)
 }
 
 func (cc *PushConsumer) WithInterceptor(fs ...primitive.Interceptor) *PushConsumer {
@@ -92,78 +95,103 @@ func (cc *PushConsumer) WithInterceptor(fs ...primitive.Interceptor) *PushConsum
 // Deprecated: use RegisterSingleMessage or RegisterBatchMessage instead
 func (cc *PushConsumer) Subscribe(topic string, f func(context.Context, *primitive.MessageExt) error) *PushConsumer {
 	if _, ok := cc.subscribers[topic]; ok {
-		xlog.Panic("duplicated subscribe", zap.String("topic", topic))
+		xlog.Jupiter().Panic("duplicated subscribe", zap.String("topic", topic))
 	}
+
+	tracer := xtrace.NewTracer(trace.SpanKindConsumer)
+
 	fn := func(ctx context.Context, msgs ...*primitive.MessageExt) (consumer.ConsumeResult, error) {
 		for _, msg := range msgs {
 			var (
-				span opentracing.Span
+				span trace.Span
 			)
-
 			if cc.EnableTrace {
-				span, ctx = trace.StartSpanFromContext(
-					ctx,
-					cc.Topic,
-					trace.TagComponent("rocketmq"),
-					ext.SpanKindConsumer,
-					trace.HeaderExtractor(metadata.New(msg.GetProperties())),
-				)
-				// todo optimize
-				defer span.Finish()
+				carrier := propagation.MapCarrier{}
+				attrs := []attribute.KeyValue{
+					semconv.MessagingSystemKey.String("rocketmq"),
+					semconv.MessagingDestinationKindKey.String(msg.Topic),
+				}
+
+				for key, value := range msg.GetProperties() {
+					carrier[key] = value
+				}
+
+				ctx, span = tracer.Start(ctx, msg.Topic, carrier, trace.WithAttributes(attrs...))
+				defer span.End()
 			}
 
 			if cc.bucket != nil {
 				if ok := cc.bucket.WaitMaxDuration(1, cc.WaitMaxDuration); !ok {
-					xlog.Warn("too many messages, reconsume later", zap.String("body", string(msg.Body)), zap.String("topic", cc.Topic))
+					xlog.Jupiter().Warn("too many messages, reconsume later", zap.String("body", string(msg.Body)), zap.String("topic", cc.Topic))
 					return consumer.ConsumeRetryLater, nil
 				}
 			}
 
 			err := f(ctx, msg)
 			if err != nil {
-				xlog.Error("consumer message", zap.Error(err), zap.String("field", cc.name), zap.Any("ext", msg))
+				xlog.Jupiter().Error("consumer message", zap.Error(err), zap.String("field", cc.name), zap.Any("ext", msg))
 				return consumer.ConsumeRetryLater, err
 			}
 		}
 
 		return consumer.ConsumeSuccess, nil
 	}
+
 	cc.subscribers[topic] = fn
 	return cc
 }
 
 func (cc *PushConsumer) RegisterSingleMessage(f func(context.Context, *primitive.MessageExt) error) *PushConsumer {
 	if _, ok := cc.subscribers[cc.Topic]; ok {
-		xlog.Panic("duplicated register single message", zap.String("topic", cc.Topic))
+		xlog.Jupiter().Panic("duplicated register single message", zap.String("topic", cc.Topic))
 	}
+
+	tracer := xtrace.NewTracer(trace.SpanKindConsumer)
+	attrs := []attribute.KeyValue{
+		semconv.MessagingSystemKey.String("rocketmq"),
+		semconv.MessagingRocketmqClientGroupKey.String(cc.Group),
+		semconv.MessagingRocketmqClientIDKey.String(cc.InstanceName),
+		semconv.MessagingRocketmqConsumptionModelKey.String(cc.MessageModel),
+	}
+
 	fn := func(ctx context.Context, msgs ...*primitive.MessageExt) (consumer.ConsumeResult, error) {
 		for _, msg := range msgs {
 			var (
-				span opentracing.Span
+				span trace.Span
 			)
 
 			if cc.EnableTrace {
-				span, ctx = trace.StartSpanFromContext(
-					ctx,
-					cc.Topic,
-					trace.TagComponent("rocketmq"),
-					ext.SpanKindConsumer,
-					trace.HeaderExtractor(metadata.New(msg.GetProperties())),
+				carrier := propagation.MapCarrier{}
+
+				for key, value := range msg.GetProperties() {
+					carrier[key] = value
+				}
+
+				ctx, span = tracer.Start(ctx, msg.Topic, carrier, trace.WithAttributes(attrs...))
+
+				span.SetAttributes(
+					semconv.MessagingRocketmqNamespaceKey.String(msg.Topic),
+					semconv.MessagingRocketmqMessageTagKey.String(msg.GetTags()),
 				)
-				// todo optimize
-				defer span.Finish()
+
+				ctx = xlog.NewContext(ctx, xlog.Default(), span.SpanContext().TraceID().String())
+
+				defer span.End()
 			}
 
 			if cc.bucket != nil {
 				if ok := cc.bucket.WaitMaxDuration(1, cc.WaitMaxDuration); !ok {
-					xlog.Warn("too many messages, reconsume later", zap.String("body", string(msg.Body)), zap.String("topic", cc.Topic))
+					xlog.Jupiter().Warn("too many messages, reconsume later", zap.String("body", string(msg.Body)), zap.String("topic", cc.Topic))
 					return consumer.ConsumeRetryLater, nil
 				}
 			}
 
 			err := f(ctx, msg)
 			if err != nil {
-				xlog.Error("consumer message", zap.Error(err), zap.String("field", cc.name), zap.Any("ext", msg))
+				xlog.Jupiter().Error("consumer message", zap.Error(err), zap.String("field", cc.name), zap.Any("ext", msg))
+				if cc.EnableTrace && span != nil {
+					span.RecordError(err)
+				}
 				return consumer.ConsumeRetryLater, err
 			}
 		}
@@ -176,37 +204,42 @@ func (cc *PushConsumer) RegisterSingleMessage(f func(context.Context, *primitive
 
 func (cc *PushConsumer) RegisterBatchMessage(f func(context.Context, ...*primitive.MessageExt) error) *PushConsumer {
 	if _, ok := cc.subscribers[cc.Topic]; ok {
-		xlog.Panic("duplicated register batch message", zap.String("topic", cc.Topic))
+		xlog.Jupiter().Panic("duplicated register batch message", zap.String("topic", cc.Topic))
 	}
+
+	tracer := xtrace.NewTracer(trace.SpanKindConsumer)
+
 	fn := func(ctx context.Context, msgs ...*primitive.MessageExt) (consumer.ConsumeResult, error) {
-		var (
-			span opentracing.Span
-		)
 
 		if cc.EnableTrace {
 			for _, msg := range msgs {
-				span, ctx = trace.StartSpanFromContext(
-					ctx,
-					cc.Topic,
-					trace.TagComponent("rocketmq"),
-					ext.SpanKindConsumer,
-					trace.HeaderExtractor(metadata.New(msg.GetProperties())),
+				var (
+					span trace.Span
 				)
-				// todo optimize
-				defer span.Finish()
+
+				carrier := propagation.MapCarrier{}
+				attrs := []attribute.KeyValue{
+					semconv.MessagingSystemKey.String("rocketmq"),
+					semconv.MessagingDestinationKindKey.String(msg.Topic),
+				}
+				for key, value := range msg.GetProperties() {
+					carrier[key] = value
+				}
+				ctx, span = tracer.Start(ctx, msg.Topic, carrier, trace.WithAttributes(attrs...))
+				defer span.End()
 			}
 		}
 
 		if cc.bucket != nil {
 			if ok := cc.bucket.WaitMaxDuration(int64(len(msgs)), cc.WaitMaxDuration); !ok {
-				xlog.Warn("too many messages, reconsume later", zap.String("topic", cc.Topic))
+				xlog.Jupiter().Warn("too many messages, reconsume later", zap.String("topic", cc.Topic))
 				return consumer.ConsumeRetryLater, nil
 			}
 		}
 
 		err := f(ctx, msgs...)
 		if err != nil {
-			xlog.Error("consumer batch message", zap.Error(err), zap.String("field", cc.name))
+			xlog.Jupiter().Error("consumer batch message", zap.Error(err), zap.String("field", cc.name))
 			return consumer.ConsumeRetryLater, err
 		}
 
@@ -217,6 +250,10 @@ func (cc *PushConsumer) RegisterBatchMessage(f func(context.Context, ...*primiti
 }
 
 func (cc *PushConsumer) Start() error {
+	if cc.started {
+		return nil
+	}
+
 	var opts = []consumer.Option{
 		consumer.WithGroupName(cc.Group),
 		consumer.WithInstance(cc.InstanceName),
@@ -256,7 +293,7 @@ func (cc *PushConsumer) Start() error {
 
 	// if client == nil. <--- fix lint: this comparison is never true.
 	if err != nil {
-		xlog.Panic("create consumer",
+		xlog.Jupiter().Panic("create consumer",
 			xlog.FieldName(cc.name),
 			xlog.FieldExtMessage(cc.ConsumerConfig),
 			xlog.FieldErr(err),
@@ -265,7 +302,7 @@ func (cc *PushConsumer) Start() error {
 
 	if cc.Enable {
 		if err := client.Start(); err != nil {
-			xlog.Panic("start consumer",
+			xlog.Jupiter().Panic("start consumer",
 				xlog.FieldName(cc.name),
 				xlog.FieldExtMessage(cc.ConsumerConfig),
 				xlog.FieldErr(err),
@@ -273,8 +310,12 @@ func (cc *PushConsumer) Start() error {
 			return err
 		}
 		// 在应用退出的时候，保证注销
-		defers.Register(func() error { cc.Close(); return nil })
+		hooks.Register(hooks.Stage_BeforeStop, func() {
+			cc.Close()
+		})
 	}
+
+	cc.started = true
 
 	return nil
 }

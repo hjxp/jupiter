@@ -1,12 +1,12 @@
-![](doc/logo.png)
+# JUPITER: Governance-oriented Microservice Framework
+
+![logo](doc/logo.png)
 
 [![GoTest](https://github.com/douyu/jupiter/workflows/Go/badge.svg)](https://github.com/douyu/jupiter/actions)
 [![codecov](https://codecov.io/gh/douyu/jupiter/branch/master/graph/badge.svg)](https://codecov.io/gh/douyu/jupiter)
 [![go.dev reference](https://img.shields.io/badge/go.dev-reference-007d9c?logo=go&logoColor=white&style=flat-square)](https://pkg.go.dev/github.com/douyu/jupiter?tab=doc)
 [![Go Report Card](https://goreportcard.com/badge/github.com/douyu/jupiter)](https://goreportcard.com/report/github.com/douyu/jupiter)
 ![license](https://img.shields.io/badge/license-Apache--2.0-green.svg)
-
-# JUPITER: Governance-oriented Microservice Framework
 
 ## Introduction
 
@@ -16,57 +16,32 @@ JUPITER is a governance-oriented microservice framework, which is being used for
 
 See the [中文文档](http://jupiter.douyu.com/) for the Chinese documentation.
 
+## Requirements
+
+- Go version >= 1.18
+- Docker
 
 ## Quick Start
 
-```golang
-func main() {
-	var app jupiter.Application
-	app.Startup()
-	app.Serve(startHTTPServer())
-	app.Serve(startGRPCServer())
-	app.Schedule(startWorker())
-//	app.Executor(startXxlJob())
-	app.Run()
-}
+1. Install [jupiter](https://github.com/douyu/jupiter/tree/master/cmd/jupiter) toolkit
+1. Create example project from [jupiter-layout](https://github.com/douyu/jupiter-layout)
+1. Download go mod dependencies
+1. Run the example project with [jupiter](https://github.com/douyu/jupiter/tree/master/cmd/jupiter) toolkit
+1. Just code yourself :-)
 
-func startHTTPServer() server.Server {
-	server := xecho.DefaultConfig().Build()
-	server.GET("/hello", func(ctx echo.Context) error {
-		return ctx.JSON(200, "Gopher Wuhan")
-	})
-	return server
-}
-
-func startGRPCServer() server.Server {
-	server := xgrpc.DefaultConfig().Build()
-	helloworld.RegisterGreeterServer(server.Server, new(greeter.Greeter))
-	return server
-}
-
-func startWorker() worker.Worker {
-	cron := xcron.DefaultConfig().Build()
-	cron.Schedule(xcron.Every(time.Second*10), xcron.FuncJob(func() error {
-		return nil
-	}))
-	return cron
-}
-// 注册xxl定时任务
-/*
-func startXxlJob() executor.Executor {
-	executor := xxl.DefaultConfig().Build()
-	executor.RegXJob(
-		NewTest(),
-	)
-	return executor
-}
-*/
+```bash
+go install github.com/douyu/jupiter/cmd/jupiter@latest
+jupiter new example-go
+cd example-go
+go mod tidy
+docker-compose -f deployment/docker-compose.yml up -d
+jupiter run -c cmd/exampleserver/.jupiter.toml
 ```
 
-More Example:   
-- [Quick Start](doc/wiki-cn/quickstart.md)  
-- [Examples](https://github.com/douyu/jupiter-examples)
+More Example:
+
 - [Project Layout](https://github.com/douyu/jupiter-layout)
+- [Examples](https://github.com/douyu/jupiter-examples)
 
 ## Bugs and Feedback
 

@@ -22,11 +22,12 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/douyu/jupiter/pkg/constant"
+	"github.com/douyu/jupiter/pkg/core/constant"
 	"github.com/douyu/jupiter/pkg/server"
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/labstack/echo/v4"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 // Server ...
@@ -78,16 +79,6 @@ func newServer(config *Config) (*Server, error) {
 }
 
 func (s *Server) Healthz() bool {
-	if s.Echo.Listener == nil {
-		return false
-	}
-
-	conn, err := s.Echo.Listener.Accept()
-	if err != nil {
-		return false
-	}
-
-	conn.Close()
 	return true
 }
 
@@ -96,7 +87,7 @@ func (s *Server) Serve() error {
 	s.Echo.Logger.SetOutput(os.Stdout)
 	s.Echo.Debug = s.config.Debug
 	s.Echo.HideBanner = true
-	s.Echo.StdLogger = xlog.JupiterLogger.StdLog()
+	s.Echo.StdLogger = zap.NewStdLog(xlog.Jupiter())
 	for _, route := range s.Echo.Routes() {
 		s.config.logger.Info("add route", xlog.FieldMethod(route.Method), xlog.String("path", route.Path))
 	}

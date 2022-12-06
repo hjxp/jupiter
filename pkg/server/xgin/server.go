@@ -16,12 +16,11 @@ package xgin
 
 import (
 	"context"
+	"net"
 	"net/http"
 
-	"net"
-
-	"github.com/douyu/jupiter/pkg/constant"
-	"github.com/douyu/jupiter/pkg/ecode"
+	"github.com/douyu/jupiter/pkg/core/constant"
+	"github.com/douyu/jupiter/pkg/core/ecode"
 	"github.com/douyu/jupiter/pkg/server"
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/gin-gonic/gin"
@@ -58,7 +57,7 @@ func (s *Server) Upgrade(ws *WebSocket) gin.IRoutes {
 
 // Serve implements server.Server interface.
 func (s *Server) Serve() error {
-	// s.Gin.StdLogger = xlog.JupiterLogger.StdLog()
+	// s.Gin.StdLogger = xlog.Jupiter().StdLog()
 	for _, route := range s.Engine.Routes() {
 		s.config.logger.Info("add route", xlog.FieldMethod(route.Method), xlog.String("path", route.Path))
 	}
@@ -104,15 +103,5 @@ func (s *Server) Info() *server.ServiceInfo {
 }
 
 func (s *Server) Healthz() bool {
-	if s.listener == nil {
-		return false
-	}
-
-	conn, err := s.listener.Accept()
-	if err != nil {
-		return false
-	}
-
-	conn.Close()
 	return true
 }

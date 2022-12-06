@@ -18,11 +18,12 @@ import (
 	"fmt"
 
 	"github.com/douyu/jupiter/pkg/conf"
-	"github.com/douyu/jupiter/pkg/constant"
-	"github.com/douyu/jupiter/pkg/ecode"
+	"github.com/douyu/jupiter/pkg/core/constant"
+	"github.com/douyu/jupiter/pkg/core/ecode"
 	"github.com/douyu/jupiter/pkg/flag"
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/pkg/errors"
+	"go.uber.org/zap"
 )
 
 //ModName named a mod
@@ -63,7 +64,7 @@ func DefaultConfig() *Config {
 		ReadBufferSize:            1024, // 1KB
 		WriteBufferSize:           1024, // 1KB
 		ReduceMemoryUsage:         true,
-		logger:                    xlog.JupiterLogger.With(xlog.FieldMod(ModName)),
+		logger:                    xlog.Jupiter().With(xlog.FieldMod(ModName)),
 		DisablePrintStack:         false,
 		EnableTLS:                 false,
 		CertFile:                  "cert.pem",
@@ -74,7 +75,7 @@ func DefaultConfig() *Config {
 
 // StdConfig Jupiter Standard HTTP Server config
 func StdConfig(name string) *Config {
-	return RawConfig("jupiter.server." + name)
+	return RawConfig(constant.ConfigKey("server." + name))
 }
 
 // RawConfig ...
@@ -108,7 +109,7 @@ func (config *Config) WithPort(port int) *Config {
 func (config *Config) MustBuild() *Server {
 	server, err := config.Build()
 	if err != nil {
-		xlog.Panicf("build echo server failed: %v", err)
+		xlog.Jupiter().Panic("build echo server failed", zap.Error(err))
 	}
 	return server
 }

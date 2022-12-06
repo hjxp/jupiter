@@ -15,10 +15,14 @@
 package conf
 
 import (
+	"encoding/json"
 	"log"
+	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+	"github.com/douyu/jupiter/pkg/core/hooks"
 	"github.com/douyu/jupiter/pkg/flag"
+	"gopkg.in/yaml.v3"
 )
 
 const DefaultEnvPrefix = "APP_"
@@ -30,16 +34,33 @@ func init() {
 	}})
 
 	flag.Register(&flag.StringFlag{Name: "config", Usage: "--config=config.toml", Action: func(key string, fs *flag.FlagSet) {
+		hooks.Do(hooks.Stage_BeforeLoadConfig)
+
 		var configAddr = fs.String(key)
 		log.Printf("read config: %s", configAddr)
 		datasource, err := NewDataSource(configAddr)
 		if err != nil {
 			log.Fatalf("build datasource[%s] failed: %v", configAddr, err)
 		}
-		if err := LoadFromDataSource(datasource, toml.Unmarshal); err != nil {
+
+		unmarshaler := toml.Unmarshal
+		switch filepath.Ext(configAddr) {
+		case ".toml":
+			// default config type
+		case ".yaml", ".yml":
+			unmarshaler = yaml.Unmarshal
+		case ".json":
+			unmarshaler = json.Unmarshal
+		default:
+			log.Fatalf("unsupported config type: %s", filepath.Ext(configAddr))
+		}
+
+		if err := LoadFromDataSource(datasource, unmarshaler); err != nil {
 			log.Fatalf("load config from datasource[%s] failed: %v", configAddr, err)
 		}
 		log.Printf("load config from datasource[%s] completely!", configAddr)
+
+		hooks.Do(hooks.Stage_AfterLoadConfig)
 	}})
 
 	flag.Register(&flag.StringFlag{Name: "config-tag", Usage: "--config-tag=mapstructure", Default: "mapstructure", Action: func(key string, fs *flag.FlagSet) {

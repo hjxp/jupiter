@@ -19,17 +19,22 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alibaba/sentinel-golang/core/base"
+	"github.com/douyu/jupiter/pkg/core/sentinel"
+	"github.com/douyu/jupiter/pkg/core/xtrace"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/apache/rocketmq-client-go/v2/consumer"
 	"github.com/apache/rocketmq-client-go/v2/primitive"
-	"github.com/douyu/jupiter/pkg/imeta"
-	"github.com/douyu/jupiter/pkg/istats"
-	"github.com/douyu/jupiter/pkg/metric"
-	"github.com/douyu/jupiter/pkg/trace"
+	"github.com/douyu/jupiter/pkg/core/imeta"
+	"github.com/douyu/jupiter/pkg/core/istats"
+	"github.com/douyu/jupiter/pkg/core/metric"
 	"github.com/douyu/jupiter/pkg/util/xdebug"
 	"github.com/douyu/jupiter/pkg/xlog"
-	"github.com/opentracing/opentracing-go"
-	"github.com/opentracing/opentracing-go/ext"
-	"github.com/opentracing/opentracing-go/log"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -62,7 +67,7 @@ func consumeResultStr(result consumer.ConsumeResult) string {
 func pushConsumerDefaultInterceptor(pushConsumer *PushConsumer) primitive.Interceptor {
 	return func(ctx context.Context, req, reply interface{}, next primitive.Invoker) error {
 		beg := time.Now()
-		msgs := req.([]*primitive.MessageExt)
+		msgs, _ := req.([]*primitive.MessageExt)
 
 		err := next(ctx, msgs, reply)
 		if reply == nil {
@@ -82,14 +87,14 @@ func pushConsumerDefaultInterceptor(pushConsumer *PushConsumer) primitive.Interc
 			topic := msg.Topic
 			result := consumeResultStr(holder.ConsumeResult)
 			if err != nil {
-				xlog.Error("push consumer",
+				xlog.Jupiter().Error("push consumer",
 					xlog.String("topic", topic),
 					xlog.String("host", host),
 					xlog.String("result", result),
 					xlog.Any("err", err))
 
 			} else {
-				xlog.Info("push consumer",
+				xlog.Jupiter().Info("push consumer",
 					xlog.String("topic", topic),
 					xlog.String("host", host),
 					xlog.String("result", result),
@@ -100,7 +105,7 @@ func pushConsumerDefaultInterceptor(pushConsumer *PushConsumer) primitive.Interc
 		}
 		if pushConsumer.RwTimeout > time.Duration(0) {
 			if time.Since(beg) > pushConsumer.RwTimeout {
-				xlog.Error("slow",
+				xlog.Jupiter().Error("slow",
 					xlog.String("topic", pushConsumer.Topic),
 					xlog.String("result", consumeResultStr(holder.ConsumeResult)),
 					xlog.Any("cost", time.Since(beg).Seconds()),
@@ -114,7 +119,7 @@ func pushConsumerDefaultInterceptor(pushConsumer *PushConsumer) primitive.Interc
 
 func pushConsumerMDInterceptor(pushConsumer *PushConsumer) primitive.Interceptor {
 	return func(ctx context.Context, req, reply interface{}, next primitive.Invoker) error {
-		msgs := req.([]*primitive.MessageExt)
+		msgs, _ := req.([]*primitive.MessageExt)
 		if len(msgs) > 0 {
 			var meta = imeta.New(nil)
 			for key, vals := range msgs[0].GetProperties() {
@@ -125,6 +130,24 @@ func pushConsumerMDInterceptor(pushConsumer *PushConsumer) primitive.Interceptor
 			ctx = imeta.WithContext(ctx, meta)
 		}
 		err := next(ctx, msgs, reply)
+		return err
+	}
+}
+
+func pushConsumerSentinelInterceptor(pushConsumer *PushConsumer) primitive.Interceptor {
+	return func(ctx context.Context, req, reply interface{}, next primitive.Invoker) error {
+		msgs, _ := req.([]*primitive.MessageExt)
+
+		entry, blockerr := sentinel.Entry(pushConsumer.Addr[0],
+			sentinel.WithResourceType(base.ResTypeMQ),
+			sentinel.WithTrafficType(base.Inbound))
+		if blockerr != nil {
+			return blockerr
+		}
+
+		err := next(ctx, msgs, reply)
+		entry.Exit(sentinel.WithError(err))
+
 		return err
 	}
 }
@@ -145,29 +168,33 @@ func produceResultStr(result primitive.SendStatus) string {
 }
 
 func producerDefaultInterceptor(producer *Producer) primitive.Interceptor {
+	tracer := xtrace.NewTracer(trace.SpanKindProducer)
+	attrs := []attribute.KeyValue{
+		semconv.MessagingSystemKey.String("rocketmq"),
+		semconv.MessagingRocketmqClientGroupKey.String(producer.Group),
+		semconv.MessagingRocketmqClientIDKey.String(producer.InstanceName),
+	}
+
 	return func(ctx context.Context, req, reply interface{}, next primitive.Invoker) error {
 		beg := time.Now()
 		realReq := req.(*primitive.Message)
 		realReply := reply.(*primitive.SendResult)
 
 		var (
-			span opentracing.Span
+			span trace.Span
 		)
 
 		if producer.EnableTrace {
-			span, ctx = trace.StartSpanFromContext(
-				ctx,
-				realReq.Topic,
-				trace.TagComponent("rocketmq"),
-				ext.SpanKindProducer,
-			)
-			defer span.Finish()
 
 			md := metadata.New(nil)
-			ctx = trace.HeaderInjector(ctx, md)
+			ctx, span = tracer.Start(ctx, realReq.Topic, propagation.HeaderCarrier(md), trace.WithAttributes(attrs...))
+
+			defer span.End()
+
 			for k, v := range md {
-				realReq.WithProperty(k, strings.Join(v, ","))
+				realReq.WithProperty(strings.ToLower(k), strings.Join(v, ","))
 			}
+
 		}
 
 		err := next(ctx, realReq, realReply)
@@ -183,15 +210,19 @@ func producerDefaultInterceptor(producer *Producer) primitive.Interceptor {
 
 		if producer.EnableTrace {
 			if err != nil {
-				ext.Error.Set(span, true)
-				ext.LogError(span, err, log.Object("req", realReq), log.Object("res", realReply))
+				span := trace.SpanFromContext(ctx)
+				if err != nil {
+					span.RecordError(err)
+					span.SetStatus(codes.Error, err.Error())
+				}
+				span.End()
 			}
 		}
 
 		// 消息处理结果统计
 		topic := producer.Topic
 		if err != nil {
-			xlog.Error("produce",
+			xlog.Jupiter().Error("produce",
 				xlog.String("topic", topic),
 				xlog.String("queue", ""),
 				xlog.String("result", realReply.String()),
@@ -200,7 +231,7 @@ func producerDefaultInterceptor(producer *Producer) primitive.Interceptor {
 			metric.ClientHandleCounter.Inc(metric.TypeRocketMQ, topic, "produce", "unknown", err.Error())
 			metric.ClientHandleHistogram.Observe(time.Since(beg).Seconds(), metric.TypeRocketMQ, topic, "produce", "unknown")
 		} else {
-			xlog.Info("produce",
+			xlog.Jupiter().Info("produce",
 				xlog.String("topic", topic),
 				xlog.Any("queue", realReply.MessageQueue),
 				xlog.String("result", produceResultStr(realReply.Status)),
@@ -211,7 +242,7 @@ func producerDefaultInterceptor(producer *Producer) primitive.Interceptor {
 
 		if producer.RwTimeout > time.Duration(0) {
 			if time.Since(beg) > producer.RwTimeout {
-				xlog.Error("slow",
+				xlog.Jupiter().Error("slow",
 					xlog.String("topic", topic),
 					xlog.String("result", realReply.String()),
 					xlog.Any("cost", time.Since(beg).Seconds()),
@@ -223,7 +254,7 @@ func producerDefaultInterceptor(producer *Producer) primitive.Interceptor {
 	}
 }
 
-// 统一minerva metadata 传递
+// 统一 metadata 传递.
 func producerMDInterceptor(producer *Producer) primitive.Interceptor {
 	return func(ctx context.Context, req, reply interface{}, next primitive.Invoker) error {
 		if md, ok := imeta.FromContext(ctx); ok {
@@ -233,6 +264,22 @@ func producerMDInterceptor(producer *Producer) primitive.Interceptor {
 			}
 		}
 		err := next(ctx, req, reply)
+		return err
+	}
+}
+
+func producerSentinelInterceptor(producer *Producer) primitive.Interceptor {
+	return func(ctx context.Context, req, reply interface{}, next primitive.Invoker) error {
+		entry, blockerr := sentinel.Entry(producer.Addr[0],
+			sentinel.WithResourceType(base.ResTypeMQ),
+			sentinel.WithTrafficType(base.Outbound))
+		if blockerr != nil {
+			return blockerr
+		}
+
+		err := next(ctx, req, reply)
+		entry.Exit(sentinel.WithError(err))
+
 		return err
 	}
 }

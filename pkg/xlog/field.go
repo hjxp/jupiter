@@ -1,4 +1,4 @@
-// Copyright 2020 Douyu
+// Copyright 2022 Douyu
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -116,4 +116,39 @@ func FieldMethod(value string) Field {
 // FieldEvent ...
 func FieldEvent(value string) Field {
 	return String("event", value)
+}
+
+// FieldHost ...
+func FieldHost(value string) Field {
+	return String("host", value)
+}
+
+// FieldReqAID ...
+func FieldReqAID(value string) Field {
+	return String("reqAid", value)
+}
+
+// FieldIP ...
+func FieldIP(value string) Field {
+	return String("ip", value)
+}
+
+// FieldReqHost ...
+func FieldReqHost(value string) Field {
+	return String("reqHost", value)
+}
+
+// FieldColor ...
+func FieldColor(value string) Field {
+	return String("color", value)
+}
+
+// FieldStdMethod ...
+func FieldStdMethod(value string) Field {
+	return String("stdMeth", value)
+}
+
+// FieldTID ...
+func FieldTID(value string) Field {
+	return String("tid", value)
 }

@@ -17,7 +17,7 @@ package etcdv3
 import (
 	"context"
 
-	"github.com/douyu/jupiter/pkg/ecode"
+	"github.com/douyu/jupiter/pkg/core/ecode"
 	"github.com/douyu/jupiter/pkg/util/xgo"
 	"github.com/douyu/jupiter/pkg/xlog"
 	"go.etcd.io/etcd/api/v3/mvccpb"
@@ -49,8 +49,11 @@ func (w *Watch) IncipientKeyValues() []*mvccpb.KeyValue {
 func (client *Client) WatchPrefix(ctx context.Context, prefix string) (*Watch, error) {
 	resp, err := client.Get(ctx, prefix, clientv3.WithPrefix())
 	if err != nil {
+		client.config.logger.Error("client.Get failed", xlog.FieldErr(err))
 		return nil, err
 	}
+
+	client.config.logger.Debug("client.Get finished", xlog.FieldKey(prefix), xlog.FieldValueAny(resp))
 
 	var w = &Watch{
 		revision:     resp.Header.Revision,
@@ -71,14 +74,14 @@ func (client *Client) WatchPrefix(ctx context.Context, prefix string) (*Watch, e
 					w.revision = n.Header.GetRevision()
 				}
 				if err := n.Err(); err != nil {
-					xlog.Error(ecode.MsgWatchRequestErr, xlog.FieldErrKind(ecode.ErrKindRegisterErr), xlog.FieldErr(err), xlog.FieldAddr(prefix))
+					xlog.Jupiter().Error(ecode.MsgWatchRequestErr, xlog.FieldErrKind(ecode.ErrKindRegisterErr), xlog.FieldErr(err), xlog.FieldAddr(prefix))
 					continue
 				}
 				for _, ev := range n.Events {
 					select {
 					case w.eventChan <- ev:
 					default:
-						xlog.Error("watch etcd with prefix", xlog.Any("err", "block event chan, drop event message"))
+						xlog.Jupiter().Error("watch etcd with prefix", xlog.Any("err", "block event chan, drop event message"))
 					}
 				}
 			}

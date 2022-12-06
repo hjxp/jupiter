@@ -17,9 +17,10 @@ package xgoframe
 import (
 	"context"
 
-	"github.com/douyu/jupiter/pkg/constant"
+	"github.com/douyu/jupiter/pkg/core/constant"
 	"github.com/douyu/jupiter/pkg/xlog"
-	//"github.com/douyu/jupiter/pkg/ecode"
+
+	//"github.com/douyu/jupiter/pkg/core/ecode"
 	//"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/douyu/jupiter/pkg/server"
 	"github.com/gogf/gf/frame/g"
@@ -81,7 +82,6 @@ func (s *Server) Info() *server.ServiceInfo {
 }
 
 // Healthz
-// TODO(roamerlv):
 func (s *Server) Healthz() bool {
 	return true
 }

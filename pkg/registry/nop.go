@@ -25,24 +25,24 @@ import (
 type Local struct{}
 
 // ListServices ...
-func (n Local) ListServices(ctx context.Context, s string, s2 string) ([]*server.ServiceInfo, error) {
+func (n Local) ListServices(ctx context.Context, s string) ([]*server.ServiceInfo, error) {
 	panic("implement me")
 }
 
 // WatchServices ...
-func (n Local) WatchServices(ctx context.Context, s string, s2 string) (chan Endpoints, error) {
+func (n Local) WatchServices(ctx context.Context, s string) (chan Endpoints, error) {
 	panic("implement me")
 }
 
 // RegisterService ...
 func (n Local) RegisterService(ctx context.Context, si *server.ServiceInfo) error {
-	xlog.Info("register service locally", xlog.FieldMod("registry"), xlog.FieldName(si.Name), xlog.FieldAddr(si.Label()))
+	xlog.Jupiter().Info("register service locally", xlog.FieldMod("registry"), xlog.FieldName(si.Name), xlog.FieldAddr(si.Label()))
 	return nil
 }
 
 // UnregisterService ...
 func (n Local) UnregisterService(ctx context.Context, si *server.ServiceInfo) error {
-	xlog.Info("unregister service locally", xlog.FieldMod("registry"), xlog.FieldName(si.Name), xlog.FieldAddr(si.Label()))
+	xlog.Jupiter().Info("unregister service locally", xlog.FieldMod("registry"), xlog.FieldName(si.Name), xlog.FieldAddr(si.Label()))
 	return nil
 }
 

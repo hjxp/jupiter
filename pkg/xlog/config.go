@@ -1,4 +1,4 @@
-// Copyright 2020 Douyu
+// Copyright 2022 Douyu
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,23 +21,30 @@ import (
 
 	"github.com/douyu/jupiter/pkg"
 	"github.com/douyu/jupiter/pkg/conf"
-	"github.com/douyu/jupiter/pkg/constant"
+	"github.com/douyu/jupiter/pkg/core/constant"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
 
 func init() {
 	conf.OnLoaded(func(c *conf.Configuration) {
-		log.Print("hook config, init loggers")
-		log.Printf("reload default logger with configKey: %s", ConfigEntry("default"))
-		DefaultLogger = RawConfig(constant.ConfigPrefix + ".logger.default").Build()
+		prefix := constant.GetConfigPrefix()
+		// compatible with app.logger
+		if conf.Get("app.logger") != nil {
+			prefix = "app"
+		}
 
-		log.Printf("reload default logger with configKey: %s", ConfigEntry("jupiter"))
-		JupiterLogger = RawConfig(constant.ConfigPrefix + ".logger.jupiter").Build()
+		log.Print("hook config, init loggers")
+
+		key := prefix + ".logger.default"
+		log.Printf("reload default logger with configKey: %s", key)
+		SetDefault(RawConfig(key).Build())
+
+		key = prefix + ".logger.jupiter"
+		log.Printf("reload jupiter logger with configKey: %s", key)
+		SetJupiter(jupiterConfig(prefix).Build())
 	})
 }
-
-var ConfigPrefix = constant.ConfigPrefix + ".logger"
 
 // Config ...
 type Config struct {
@@ -74,10 +81,6 @@ func (config *Config) Filename() string {
 	return fmt.Sprintf("%s/%s", config.Dir, config.Name)
 }
 
-func ConfigEntry(name string) string {
-	return ConfigPrefix + "." + name
-}
-
 // RawConfig ...
 func RawConfig(key string) *Config {
 	var config = DefaultConfig()
@@ -87,11 +90,11 @@ func RawConfig(key string) *Config {
 }
 
 // StdConfig Jupiter Standard logger config
-func StdConfig(name string) *Config {
-	return RawConfig(ConfigPrefix + "." + name)
+func StdConfig(prefix, name string) *Config {
+	return RawConfig(prefix + ".logger." + name)
 }
 
-// DefaultConfig ...
+// DefaultConfig for application.
 func DefaultConfig() *Config {
 	return &Config{
 		Name:          "jupiter_default.json",
@@ -101,7 +104,7 @@ func DefaultConfig() *Config {
 		MaxAge:        1,   // 1 day
 		MaxBackup:     10,  // 10 backup
 		Interval:      24 * time.Hour,
-		CallerSkip:    2,
+		CallerSkip:    0,
 		AddCaller:     true,
 		Async:         true,
 		Queue:         false,
@@ -114,6 +117,15 @@ func DefaultConfig() *Config {
 	}
 }
 
+// jupiterConfig for framework.
+func jupiterConfig(prefix string) *Config {
+	config := DefaultConfig()
+	config.Name = "jupiter_framework.sys"
+	config, _ = conf.UnmarshalWithExpect(prefix+".logger.jupiter", config).(*Config)
+
+	return config
+}
+
 // Build ...
 func (config Config) Build() *Logger {
 	if config.EncoderConfig == nil {
@@ -123,8 +135,6 @@ func (config Config) Build() *Logger {
 		config.EncoderConfig.EncodeLevel = DebugEncodeLevel
 	}
 	logger := newLogger(&config)
-	if config.configKey != "" {
-		logger.AutoLevel(config.configKey + ".level")
-	}
+
 	return logger
 }

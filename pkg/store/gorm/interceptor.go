@@ -1,4 +1,4 @@
-// Copyright 2020 Douyu
+// Copyright 2022 Douyu
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,67 +15,57 @@
 package gorm
 
 import (
-	"context"
-	"fmt"
-	"github.com/douyu/jupiter/pkg/metric"
-	"strconv"
+	"errors"
 	"time"
 
-	"github.com/douyu/jupiter/pkg/trace"
-	"github.com/douyu/jupiter/pkg/util/xcolor"
+	"github.com/alibaba/sentinel-golang/core/base"
+	prome "github.com/douyu/jupiter/pkg/core/metric"
+	"github.com/douyu/jupiter/pkg/core/sentinel"
+	"github.com/douyu/jupiter/pkg/core/xtrace"
 	"github.com/douyu/jupiter/pkg/xlog"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	"go.opentelemetry.io/otel/trace"
+	"google.golang.org/grpc/metadata"
+	"gorm.io/gorm"
 )
 
-// Handler ...
-type Handler func(*Scope)
+type Handler func(*gorm.DB)
+type Interceptor func(dsn *DSN, op string, options *Config, next Handler) Handler
 
-// Interceptor ...
-type Interceptor func(*DSN, string, *Config) func(next Handler) Handler
+var errSlowCommand = errors.New("mysql slow command")
 
-func debugInterceptor(dsn *DSN, op string, options *Config) func(Handler) Handler {
-	return func(next Handler) Handler {
-		return func(scope *Scope) {
-			fmt.Printf("%-50s[%s] => %s\n", xcolor.Green(dsn.Addr+"/"+dsn.DBName), time.Now().Format("04:05.000"), xcolor.Green("Send: "+logSQL(scope.SQL, scope.SQLVars, true)))
-			next(scope)
-			if scope.HasError() {
-				fmt.Printf("%-50s[%s] => %s\n", xcolor.Red(dsn.Addr+"/"+dsn.DBName), time.Now().Format("04:05.000"), xcolor.Red("Erro: "+scope.DB().Error.Error()))
-			} else {
-				fmt.Printf("%-50s[%s] => %s\n", xcolor.Green(dsn.Addr+"/"+dsn.DBName), time.Now().Format("04:05.000"), xcolor.Green("Affected: "+strconv.Itoa(int(scope.DB().RowsAffected))))
-			}
-		}
-	}
-}
-
-func metricInterceptor(dsn *DSN, op string, options *Config) func(Handler) Handler {
-	return func(next Handler) Handler {
-		return func(scope *Scope) {
+func metricInterceptor() Interceptor {
+	return func(dsn *DSN, op string, options *Config, next Handler) Handler {
+		return func(scope *gorm.DB) {
 			beg := time.Now()
 			next(scope)
 			cost := time.Since(beg)
 
 			// error metric
-			if scope.HasError() {
-				metric.LibHandleCounter.WithLabelValues(metric.TypeGorm, dsn.DBName+"."+scope.TableName(), dsn.Addr, "ERR").Inc()
-				// todo sql语句，需要转换成脱密状态才能记录到日志
-				if scope.DB().Error != ErrRecordNotFound {
-					options.logger.Error("mysql err", xlog.FieldErr(scope.DB().Error), xlog.FieldName(dsn.DBName+"."+scope.TableName()), xlog.FieldMethod(op))
+			if scope.Error != nil {
+				prome.LibHandleCounter.WithLabelValues(prome.TypeMySQL, dsn.DBName+"."+scope.Name(), dsn.Addr, getStatement(scope.Error.Error())).Inc()
+
+				if scope.Error != gorm.ErrRecordNotFound {
+					xlog.Jupiter().Error("mysql err", xlog.FieldErr(scope.Error), xlog.FieldName(dsn.DBName+"."+scope.Name()), xlog.FieldMethod(op))
 				} else {
-					options.logger.Warn("record not found", xlog.FieldErr(scope.DB().Error), xlog.FieldName(dsn.DBName+"."+scope.TableName()), xlog.FieldMethod(op))
+					xlog.Jupiter().Warn("record not found", xlog.FieldErr(scope.Error), xlog.FieldName(dsn.DBName+"."+scope.Name()), xlog.FieldMethod(op))
 				}
 			} else {
-				metric.LibHandleCounter.Inc(metric.TypeGorm, dsn.DBName+"."+scope.TableName(), dsn.Addr, "OK")
+				prome.LibHandleCounter.WithLabelValues(prome.TypeMySQL, dsn.DBName+"."+scope.Name(), dsn.Addr, "OK").Inc()
 			}
 
-			metric.LibHandleHistogram.WithLabelValues(metric.TypeGorm, dsn.DBName+"."+scope.TableName(), dsn.Addr).Observe(cost.Seconds())
+			prome.LibHandleHistogram.WithLabelValues(prome.TypeMySQL, dsn.DBName+"."+scope.Name(), dsn.Addr).Observe(cost.Seconds())
 
 			if options.SlowThreshold > time.Duration(0) && options.SlowThreshold < cost {
-				options.logger.Error(
+				xlog.Jupiter().Error(
 					"slow",
 					xlog.FieldErr(errSlowCommand),
 					xlog.FieldMethod(op),
-					xlog.FieldExtMessage(logSQL(scope.SQL, scope.SQLVars, options.DetailSQL)),
+					xlog.FieldExtMessage(logSQL(scope.Statement.SQL.String(), scope.Statement.Vars, options.DetailSQL)),
 					xlog.FieldAddr(dsn.Addr),
-					xlog.FieldName(dsn.DBName+"."+scope.TableName()),
+					xlog.FieldName(dsn.DBName+"."+scope.Name()),
 					xlog.FieldCost(cost),
 				)
 			}
@@ -90,34 +80,55 @@ func logSQL(sql string, args []interface{}, containArgs bool) string {
 	return sql
 }
 
-func traceInterceptor(dsn *DSN, op string, options *Config) func(Handler) Handler {
-	return func(next Handler) Handler {
-		return func(scope *Scope) {
-			if val, ok := scope.Get("_context"); ok {
-				if ctx, ok := val.(context.Context); ok {
-					span, _ := trace.StartSpanFromContext(
-						ctx,
-						"GORM", // TODO this op value is op or GORM
-						trace.TagComponent("mysql"),
-						trace.TagSpanKind("client"),
-					)
-					defer span.Finish()
+func traceInterceptor() Interceptor {
+	tracer := xtrace.NewTracer(trace.SpanKindClient)
+	attrs := []attribute.KeyValue{
+		semconv.RPCSystemKey.String("gorm"),
+	}
 
-					// 延迟执行 scope.CombinedConditionSql() 避免sqlVar被重复追加
-					next(scope)
+	return func(dsn *DSN, op string, options *Config, next Handler) Handler {
+		return func(scope *gorm.DB) {
 
-					span.SetTag("sql.inner", dsn.DBName)
-					span.SetTag("sql.addr", dsn.Addr)
-					span.SetTag("span.kind", "client")
-					span.SetTag("peer.service", "mysql")
-					span.SetTag("db.instance", dsn.DBName)
-					span.SetTag("peer.address", dsn.Addr)
-					span.SetTag("peer.statement", logSQL(scope.SQL, scope.SQLVars, options.DetailSQL))
-					return
-				}
+			if ctx := scope.Statement.Context; ctx != nil {
+				md := metadata.New(nil)
+
+				_, span := tracer.Start(ctx, op, propagation.HeaderCarrier(md), trace.WithAttributes(attrs...))
+
+				span.SetAttributes(semconv.DBNameKey.String(dsn.DBName))
+				span.SetAttributes(semconv.DBConnectionStringKey.String(dsn.Addr))
+				span.SetAttributes(semconv.DBUserKey.String(dsn.User))
+				span.SetAttributes(semconv.DBStatementKey.String(
+					logSQL(scope.Statement.SQL.String(), scope.Statement.Vars, options.DetailSQL)))
+
+				defer span.End()
+
+				next(scope)
+
+				return
 			}
 
 			next(scope)
+
+		}
+	}
+}
+
+func sentinelInterceptor() Interceptor {
+	return func(dsn *DSN, op string, options *Config, next Handler) Handler {
+		return func(scope *gorm.DB) {
+			entry, blockerr := sentinel.Entry(dsn.Addr,
+				sentinel.WithResourceType(base.ResTypeDBSQL),
+				sentinel.WithTrafficType(base.Outbound),
+			)
+			if blockerr != nil {
+				_ = scope.AddError(blockerr)
+
+				return
+			}
+
+			next(scope)
+
+			entry.Exit(sentinel.WithError(scope.Error))
 		}
 	}
 }

@@ -18,18 +18,19 @@ import (
 	"time"
 
 	"github.com/douyu/jupiter/pkg/conf"
-	"github.com/douyu/jupiter/pkg/constant"
-	"github.com/douyu/jupiter/pkg/ecode"
+	"github.com/douyu/jupiter/pkg/core/constant"
+	"github.com/douyu/jupiter/pkg/core/ecode"
+	"github.com/douyu/jupiter/pkg/core/singleton"
 	"github.com/douyu/jupiter/pkg/flag"
-	"github.com/douyu/jupiter/pkg/util/xtime"
 	"github.com/douyu/jupiter/pkg/xlog"
+	"github.com/spf13/cast"
+	"go.uber.org/zap"
 )
-
-var ConfigPrefix = constant.ConfigPrefix + ".etcdv3"
 
 // Config ...
 type (
 	Config struct {
+		Name      string   `json:"name"`
 		Endpoints []string `json:"endpoints"`
 		CertFile  string   `json:"certFile"`
 		KeyFile   string   `json:"keyFile"`
@@ -43,7 +44,9 @@ type (
 		// 自动同步member list的间隔
 		AutoSyncInterval time.Duration `json:"autoAsyncInterval"`
 		TTL              int           // 单位：s
-		logger           *xlog.Logger
+		EnableTrace      bool          `json:"enableTrace" toml:"enableTrace"`
+
+		logger *xlog.Logger
 	}
 )
 
@@ -54,24 +57,29 @@ func (config *Config) BindFlags(fs *flag.FlagSet) {
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
+		Endpoints:      []string{"http://localhost:2379"},
 		BasicAuth:      false,
-		ConnectTimeout: xtime.Duration("5s"),
+		ConnectTimeout: cast.ToDuration("5s"),
 		Secure:         false,
-		logger:         xlog.JupiterLogger.With(xlog.FieldMod("client.etcd")),
+		EnableTrace:    true,
+		logger:         xlog.Jupiter().With(xlog.FieldMod("client.etcd")),
 	}
 }
 
 // StdConfig ...
 func StdConfig(name string) *Config {
-	return RawConfig(ConfigPrefix + "." + name)
+	return RawConfig(constant.ConfigKey("etcdv3." + name))
 }
 
 // RawConfig ...
 func RawConfig(key string) *Config {
 	var config = DefaultConfig()
+	config.Name = key
+
 	if err := conf.UnmarshalKey(key, config); err != nil {
 		config.logger.Panic("client etcd parse config panic", xlog.FieldErrKind(ecode.ErrKindUnmarshalConfigErr), xlog.FieldErr(err), xlog.FieldKey(key), xlog.FieldValueAny(config))
 	}
+
 	return config
 }
 
@@ -86,10 +94,34 @@ func (config *Config) Build() (*Client, error) {
 	return newClient(config)
 }
 
+func (config *Config) Singleton() (*Client, error) {
+	if client, ok := singleton.Load(constant.ModuleRegistryEtcd, config.Name); ok && client != nil {
+		return client.(*Client), nil
+	}
+
+	client, err := config.Build()
+	if err != nil {
+		xlog.Jupiter().Error("build etcd client failed", zap.Error(err))
+		return nil, err
+	}
+
+	singleton.Store(constant.ModuleRegistryEtcd, config.Name, client)
+
+	return client, nil
+}
+
 func (config *Config) MustBuild() *Client {
 	client, err := config.Build()
 	if err != nil {
-		xlog.Panicf("build etcd client failed: %v", err)
+		xlog.Jupiter().Panic("build etcd client failed", zap.Error(err))
+	}
+	return client
+}
+
+func (config *Config) MustSingleton() *Client {
+	client, err := config.Singleton()
+	if err != nil {
+		xlog.Jupiter().Panic("build etcd client failed", zap.Error(err))
 	}
 	return client
 }

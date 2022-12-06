@@ -18,7 +18,8 @@ import (
 	"fmt"
 
 	"github.com/douyu/jupiter/pkg/conf"
-	"github.com/douyu/jupiter/pkg/ecode"
+	"github.com/douyu/jupiter/pkg/core/constant"
+	"github.com/douyu/jupiter/pkg/core/ecode"
 	"github.com/douyu/jupiter/pkg/flag"
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/gin-gonic/gin"
@@ -51,13 +52,13 @@ func DefaultConfig() *Config {
 		Port:                      9091,
 		Mode:                      gin.ReleaseMode,
 		SlowQueryThresholdInMilli: 500, // 500ms
-		logger:                    xlog.JupiterLogger.With(xlog.FieldMod(ModName)),
+		logger:                    xlog.Jupiter().With(xlog.FieldMod(ModName)),
 	}
 }
 
 // StdConfig Jupiter Standard HTTP Server config
 func StdConfig(name string) *Config {
-	return RawConfig("jupiter.server." + name)
+	return RawConfig(constant.ConfigKey("server." + name))
 }
 
 // RawConfig ...
@@ -89,7 +90,7 @@ func (config *Config) WithPort(port int) *Config {
 }
 
 // Build create server instance, then initialize it with necessary interceptor
-func (config *Config) Build() *Server {
+func (config *Config) MustBuild() *Server {
 	server := newServer(config)
 	server.Use(recoverMiddleware(config.logger, config.SlowQueryThresholdInMilli))
 

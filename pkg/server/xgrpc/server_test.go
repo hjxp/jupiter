@@ -20,13 +20,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/douyu/jupiter/pkg/constant"
+	"github.com/douyu/jupiter/pkg/core/constant"
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/smartystreets/goconvey/convey"
 	"github.com/stretchr/testify/assert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 )
+
+func Test_Server(t *testing.T) {
+	s := DefaultConfig().MustBuild()
+	go func() {
+		s.Serve()
+	}()
+	time.Sleep(time.Second)
+	assert.True(t, s.Healthz())
+	assert.NotNil(t, s.Info())
+	s.Stop()
+}
 
 func TestServer_Serve(t *testing.T) {
 	type fields struct {
@@ -81,7 +92,7 @@ func TestServer_Stop(t *testing.T) {
 			DisableMetric:             false,
 			DisableTrace:              false,
 			SlowQueryThresholdInMilli: 500,
-			logger:                    xlog.JupiterLogger.With(xlog.FieldMod("server.grpc")),
+			logger:                    xlog.Jupiter().With(xlog.FieldMod("server.grpc")),
 			serverOptions:             []grpc.ServerOption{},
 			streamInterceptors:        []grpc.StreamServerInterceptor{},
 			unaryInterceptors:         []grpc.UnaryServerInterceptor{},
@@ -113,7 +124,7 @@ func TestServer_GracefulStop(t *testing.T) {
 			DisableMetric:             false,
 			DisableTrace:              false,
 			SlowQueryThresholdInMilli: 500,
-			logger:                    xlog.JupiterLogger.With(xlog.FieldMod("server.grpc")),
+			logger:                    xlog.Jupiter().With(xlog.FieldMod("server.grpc")),
 			serverOptions:             []grpc.ServerOption{},
 			streamInterceptors:        []grpc.StreamServerInterceptor{},
 			unaryInterceptors:         []grpc.UnaryServerInterceptor{},
@@ -146,7 +157,7 @@ func TestServer_Info(t *testing.T) {
 			DisableMetric:             false,
 			DisableTrace:              false,
 			SlowQueryThresholdInMilli: 500,
-			logger:                    xlog.JupiterLogger.With(xlog.FieldMod("server.grpc")),
+			logger:                    xlog.Jupiter().With(xlog.FieldMod("server.grpc")),
 			serverOptions:             []grpc.ServerOption{},
 			streamInterceptors:        []grpc.StreamServerInterceptor{},
 			unaryInterceptors:         []grpc.UnaryServerInterceptor{},

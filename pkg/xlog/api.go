@@ -1,4 +1,4 @@
-// Copyright 2020 Douyu
+// Copyright 2022 Douyu
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -15,141 +15,102 @@
 package xlog
 
 import (
+	"context"
+
 	"go.uber.org/zap"
 )
 
-// DefaultLogger default logger
-// Biz Log
-// debug=true as default, will be
-var DefaultLogger = Config{
-	Debug: true,
-}.Build()
-
-// frame logger
-var JupiterLogger = Config{
-	Debug: true,
-}.Build()
-
-// Auto ...
-func Auto(err error) Func {
-	if err != nil {
-		return DefaultLogger.With(zap.Any("err", err.Error())).Error
-	}
-
-	return DefaultLogger.Info
+// L returns the standard logger.
+func L(ctx context.Context) *Logger {
+	return FromContext(ctx)
 }
 
-// Info ...
-func Info(msg string, fields ...Field) {
-	DefaultLogger.Info(msg, fields...)
+// Jupiter returns framework logger
+func Jupiter() *Logger {
+	return jupiterLogger
 }
 
-// Debug ...
+func SetJupiter(logger *Logger) {
+	jupiterLogger = logger
+}
+
+// Default returns default logger
+func Default() *Logger {
+	return defaultLogger
+}
+
+func SetDefault(logger *Logger) {
+	defaultLogger = logger
+	stdLogger = defaultLogger.WithOptions(zap.AddCallerSkip(1))
+	zap.ReplaceGlobals(defaultLogger)
+	zap.RedirectStdLog(defaultLogger)
+}
+
+// Debug logs a message at DebugLevel. The message includes any fields passed
+// at the log site, as well as any fields accumulated on the logger.
 func Debug(msg string, fields ...Field) {
-	DefaultLogger.Debug(msg, fields...)
+	stdLogger.Debug(msg, fields...)
 }
 
-// Warn ...
+// Info logs a message at InfoLevel. The message includes any fields passed
+// at the log site, as well as any fields accumulated on the logger.
+func Info(msg string, fields ...Field) {
+	stdLogger.Info(msg, fields...)
+}
+
+// Warn logs a message at WarnLevel. The message includes any fields passed
+// at the log site, as well as any fields accumulated on the logger.
 func Warn(msg string, fields ...Field) {
-	DefaultLogger.Warn(msg, fields...)
+	stdLogger.Warn(msg, fields...)
 }
 
-// Error ...
+// Error logs a message at ErrorLevel. The message includes any fields passed
+// at the log site, as well as any fields accumulated on the logger.
 func Error(msg string, fields ...Field) {
-	DefaultLogger.Error(msg, fields...)
+	stdLogger.Error(msg, fields...)
 }
 
-// Panic ...
-func Panic(msg string, fields ...Field) {
-	DefaultLogger.Panic(msg, fields...)
-}
-
-// DPanic ...
+// DPanic logs a message at DPanicLevel. The message includes any fields
+// passed at the log site, as well as any fields accumulated on the logger.
+//
+// If the logger is in development mode, it then panics (DPanic means
+// "development panic"). This is useful for catching errors that are
+// recoverable, but shouldn't ever happen.
 func DPanic(msg string, fields ...Field) {
-	DefaultLogger.DPanic(msg, fields...)
+	stdLogger.DPanic(msg, fields...)
 }
 
-// Fatal ...
+// Panic logs a message at PanicLevel. The message includes any fields passed
+// at the log site, as well as any fields accumulated on the logger.
+//
+// The logger then panics, even if logging at PanicLevel is disabled.
+func Panic(msg string, fields ...Field) {
+	stdLogger.Panic(msg, fields...)
+}
+
+// Fatal logs a message at FatalLevel. The message includes any fields passed
+// at the log site, as well as any fields accumulated on the logger.
+//
+// The logger then calls os.Exit(1), even if logging at FatalLevel is
+// disabled.
 func Fatal(msg string, fields ...Field) {
-	DefaultLogger.Fatal(msg, fields...)
+	stdLogger.Fatal(msg, fields...)
 }
 
-// Debugw ...
-func Debugw(msg string, keysAndValues ...interface{}) {
-	DefaultLogger.Debugw(msg, keysAndValues...)
-}
-
-// Infow ...
-func Infow(msg string, keysAndValues ...interface{}) {
-	DefaultLogger.Infow(msg, keysAndValues...)
-}
-
-// Warnw ...
-func Warnw(msg string, keysAndValues ...interface{}) {
-	DefaultLogger.Warnw(msg, keysAndValues...)
-}
-
-// Errorw ...
-func Errorw(msg string, keysAndValues ...interface{}) {
-	DefaultLogger.Errorw(msg, keysAndValues...)
-}
-
-// Panicw ...
-func Panicw(msg string, keysAndValues ...interface{}) {
-	DefaultLogger.Panicw(msg, keysAndValues...)
-}
-
-// DPanicw ...
-func DPanicw(msg string, keysAndValues ...interface{}) {
-	DefaultLogger.DPanicw(msg, keysAndValues...)
-}
-
-// Fatalw ...
-func Fatalw(msg string, keysAndValues ...interface{}) {
-	DefaultLogger.Fatalw(msg, keysAndValues...)
-}
-
-// Debugf ...
-func Debugf(msg string, args ...interface{}) {
-	DefaultLogger.Debugf(msg, args...)
-}
-
-// Infof ...
-func Infof(msg string, args ...interface{}) {
-	DefaultLogger.Infof(msg, args...)
-}
-
-// Warnf ...
-func Warnf(msg string, args ...interface{}) {
-	DefaultLogger.Warnf(msg, args...)
-}
-
-// Errorf ...
-func Errorf(msg string, args ...interface{}) {
-	DefaultLogger.Errorf(msg, args...)
-}
-
-// Panicf ...
-func Panicf(msg string, args ...interface{}) {
-	DefaultLogger.Panicf(msg, args...)
-}
-
-// DPanicf ...
-func DPanicf(msg string, args ...interface{}) {
-	DefaultLogger.DPanicf(msg, args...)
-}
-
-// Fatalf ...
-func Fatalf(msg string, args ...interface{}) {
-	DefaultLogger.Fatalf(msg, args...)
-}
-
-// Log ...
-func (fn Func) Log(msg string, fields ...Field) {
-	fn(msg, fields...)
-}
-
-// With ...
+// With creates a child logger and adds structured context to it. Fields added
+// to the child don't affect the parent, and vice versa.
 func With(fields ...Field) *Logger {
-	return DefaultLogger.With(fields...)
+	return stdLogger.With(fields...)
+}
+
+// WithOptions clones the current Logger, applies the supplied Options, and
+// returns the resulting Logger. It's safe to use concurrently.
+func WithOptions(opts ...Option) *Logger {
+	return stdLogger.WithOptions(opts...)
+}
+
+// Named adds a new path segment to the logger's name. Segments are joined by
+// periods. By default, Loggers are unnamed.
+func Named(s string) *Logger {
+	return stdLogger.Named(s)
 }

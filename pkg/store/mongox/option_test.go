@@ -8,6 +8,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/douyu/jupiter/pkg/conf"
+	"github.com/douyu/jupiter/pkg/core/constant"
 )
 
 func TestMain(m *testing.M) {
@@ -35,6 +36,7 @@ func TestStdConfig(t *testing.T) {
 				name: "demo",
 			},
 			want: Config{
+				Name:          "demo",
 				DSN:           "",
 				SocketTimeout: time.Second * 5,
 				PoolLimit:     100,
@@ -63,7 +65,7 @@ func TestRawConfig(t *testing.T) {
 		{
 			name: "raw config",
 			args: args{
-				key: "jupiter.mongo.demo",
+				key: constant.ConfigKey("mongo.demo"),
 			},
 			want: Config{
 				DSN:           "",

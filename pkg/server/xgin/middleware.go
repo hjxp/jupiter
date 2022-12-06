@@ -25,11 +25,16 @@ import (
 	"strings"
 	"time"
 
+	"github.com/douyu/jupiter/pkg/core/xtrace"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+
 	"github.com/gin-gonic/gin"
 
-	"github.com/douyu/jupiter/pkg/metric"
-	"github.com/douyu/jupiter/pkg/trace"
+	"github.com/douyu/jupiter/pkg/core/metric"
 	"github.com/douyu/jupiter/pkg/xlog"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -171,19 +176,22 @@ func metricServerInterceptor() gin.HandlerFunc {
 }
 
 func traceServerInterceptor() gin.HandlerFunc {
+	tracer := xtrace.NewTracer(trace.SpanKindServer)
+	attrs := []attribute.KeyValue{
+		semconv.RPCSystemKey.String("http"),
+	}
 	return func(c *gin.Context) {
-		span, ctx := trace.StartSpanFromContext(
-			c.Request.Context(),
-			c.Request.Method+" "+c.Request.URL.Path,
-			trace.TagComponent("http"),
-			trace.TagSpanKind("server"),
-			trace.HeaderExtractor(c.Request.Header),
-			trace.CustomTag("http.url", c.Request.URL.Path),
-			trace.CustomTag("http.method", c.Request.Method),
-			trace.CustomTag("peer.ipv4", c.ClientIP()),
+
+		ctx, span := tracer.Start(c.Request.Context(), c.Request.URL.Path, propagation.HeaderCarrier(c.Request.Header), trace.WithAttributes(attrs...))
+		span.SetAttributes(
+			semconv.HTTPURLKey.String(c.Request.URL.String()),
+			semconv.HTTPTargetKey.String(c.Request.URL.Path),
+			semconv.HTTPMethodKey.String(c.Request.Method),
+			semconv.HTTPUserAgentKey.String(c.Request.UserAgent()),
+			semconv.HTTPClientIPKey.String(c.ClientIP()),
 		)
+		defer span.End()
 		c.Request = c.Request.WithContext(ctx)
-		defer span.Finish()
 		c.Next()
 	}
 }
