@@ -22,7 +22,9 @@ import (
 	"github.com/douyu/jupiter/pkg/core/ecode"
 	"github.com/douyu/jupiter/pkg/core/singleton"
 	"github.com/douyu/jupiter/pkg/xlog"
+	"github.com/samber/lo"
 	"github.com/spf13/cast"
+	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/balancer/roundrobin"
 	"google.golang.org/grpc/keepalive"
@@ -62,9 +64,8 @@ func DefaultConfig() *Config {
 		SlowThreshold:          cast.ToDuration("600ms"),
 		AccessInterceptorLevel: "info",
 		KeepAlive: &keepalive.ClientParameters{
-			Time:                5 * time.Minute,
-			Timeout:             20 * time.Second,
-			PermitWithoutStream: true,
+			Time:    5 * time.Minute,
+			Timeout: 20 * time.Second,
 		},
 		RegistryConfig: constant.ConfigKey("registry.default"),
 	}
@@ -101,7 +102,7 @@ func (config *Config) WithDialOption(opts ...grpc.DialOption) *Config {
 }
 
 // Build ...
-func (config *Config) Build() *grpc.ClientConn {
+func (config *Config) Build() (*grpc.ClientConn, error) {
 	config.logger = xlog.Jupiter().Named(ecode.ModClientGrpc)
 
 	if config.Debug {
@@ -155,18 +156,23 @@ func (config *Config) Singleton() (*grpc.ClientConn, error) {
 		return val.(*grpc.ClientConn), nil
 	}
 
-	cc := config.Build()
+	cc, err := config.Build()
+	if err != nil {
+		xlog.Jupiter().Error("build grpc client failed", zap.Error(err))
+		return nil, err
+	}
+
 	singleton.Store(constant.ModuleClientGrpc, config.Name, cc)
 
 	return cc, nil
 }
 
+// MustBuild panics when error found.
+func (config *Config) MustBuild() *grpc.ClientConn {
+	return lo.Must(config.Build())
+}
+
 // MustSingleton panics when error found.
 func (config *Config) MustSingleton() *grpc.ClientConn {
-	cc, err := config.Singleton()
-	if err != nil {
-		config.logger.Panic("client grpc build client conn panic")
-	}
-
-	return cc
+	return lo.Must(config.Singleton())
 }

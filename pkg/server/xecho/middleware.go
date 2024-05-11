@@ -20,19 +20,17 @@ import (
 	"runtime"
 	"time"
 
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/propagation"
-
 	"github.com/alibaba/sentinel-golang/core/base"
 	"github.com/douyu/jupiter/pkg"
 	"github.com/douyu/jupiter/pkg/core/metric"
 	"github.com/douyu/jupiter/pkg/core/sentinel"
 	"github.com/douyu/jupiter/pkg/core/xtrace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
-	"go.opentelemetry.io/otel/trace"
-
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/labstack/echo/v4"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	semconv "go.opentelemetry.io/otel/semconv/v1.12.0"
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 )
 
@@ -41,14 +39,15 @@ func extractAID(c echo.Context) string {
 }
 
 // RecoverMiddleware ...
-func recoverMiddleware(logger *xlog.Logger, slowQueryThresholdInMilli int64) echo.MiddlewareFunc {
+func recoverMiddleware(slowQueryThresholdInMilli int64) echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(ctx echo.Context) (err error) {
 			var beg = time.Now()
 			var fields = make([]xlog.Field, 0, 8)
 
 			defer func() {
-				fields = append(fields, zap.Float64("cost", time.Since(beg).Seconds()))
+				logger := xlog.J(ctx.Request().Context())
+				fields = append(fields, xlog.FieldCost(time.Since(beg)))
 				if rec := recover(); rec != nil {
 					switch rec := rec.(type) {
 					case error:
@@ -91,29 +90,26 @@ func metricServerInterceptor() echo.MiddlewareFunc {
 			beg := time.Now()
 			err = next(c)
 			method := c.Request().Method + "_" + c.Path()
-			peer := c.RealIP()
-			if aid := extractAID(c); aid != "" {
-				peer += "?aid=" + aid
-			}
-			metric.ServerHandleHistogram.Observe(time.Since(beg).Seconds(), metric.TypeHTTP, method, peer)
-			metric.ServerHandleCounter.Inc(metric.TypeHTTP, method, peer, http.StatusText(c.Response().Status))
+			metric.ServerHandleHistogram.Observe(time.Since(beg).Seconds(), metric.TypeHTTP, method, extractAID(c))
+			metric.ServerHandleCounter.Inc(metric.TypeHTTP, method, extractAID(c), http.StatusText(c.Response().Status))
 			return err
 		}
 	}
 }
 
 func traceServerInterceptor() echo.MiddlewareFunc {
-	tracer := xtrace.NewTracer(trace.SpanKindServer)
-	attrs := []attribute.KeyValue{
-		semconv.RPCSystemKey.String("http"),
-	}
-
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) (err error) {
+			tracer := xtrace.NewTracer(trace.SpanKindServer)
+			attrs := []attribute.KeyValue{
+				semconv.RPCSystemKey.String("http"),
+			}
+
 			ctx, span := tracer.Start(c.Request().Context(), c.Request().URL.Path, propagation.HeaderCarrier(c.Request().Header), trace.WithAttributes(attrs...))
 			span.SetAttributes(semconv.HTTPServerAttributesFromHTTPRequest(pkg.Name(), c.Request().URL.Path, c.Request())...)
 
 			ctx = xlog.NewContext(ctx, xlog.Default(), span.SpanContext().TraceID().String())
+			ctx = xlog.NewContext(ctx, xlog.Jupiter(), span.SpanContext().TraceID().String())
 
 			c.SetRequest(c.Request().WithContext(ctx))
 			defer span.End()

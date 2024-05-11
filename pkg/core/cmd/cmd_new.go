@@ -45,6 +45,11 @@ const (
 	oneDayUnix = 24 * 60 * 60
 )
 
+func getRemote(remote string) string {
+	ss := strings.Split(remote, "@")
+	return ss[len(ss)-1]
+}
+
 func getGlobalLayoutPath(path string) string {
 	path = strings.ReplaceAll(path, "/", "_")
 	path = strings.ReplaceAll(path, "-", "_")
@@ -63,7 +68,7 @@ func New(c *cli.Context) error {
 	}
 
 	// 生成项目
-	return generate(c, c.String("remote"))
+	return generate(c, getRemote(c.String("remote")))
 }
 
 // generate 生成项目
@@ -360,10 +365,11 @@ func checkGitCorrectness(path, branch string) {
 }
 
 // checkDays
-// 	存在文件，首先判断时间是否需要进行更新
-// 	不存在文件肯定是需要创建文件，并确定需要更新
-//  存在文件但是时间不是同一天，那么也需要进行更新
-//  需要更新的同时，更新文件的修改时间
+//
+//		存在文件，首先判断时间是否需要进行更新
+//		不存在文件肯定是需要创建文件，并确定需要更新
+//	 存在文件但是时间不是同一天，那么也需要进行更新
+//	 需要更新的同时，更新文件的修改时间
 func checkDays(path string) bool {
 	fileInfo, err := os.Stat(getGlobalLayoutLockPath(path))
 	if err == nil && fileInfo.ModTime().Unix()/oneDayUnix == time.Now().Unix()/oneDayUnix {
@@ -448,7 +454,7 @@ func userSelectUpgrade() bool {
 
 func newApp(c *cli.Context) error {
 
-	gitFileInfos := getAppFileInfosByGit(c, c.String("remote"))
+	gitFileInfos := getAppFileInfosByGit(c, getRemote(c.String("remote")))
 
 	files := lo.MapToSlice(gitFileInfos, func(key string, value *file) *file {
 		return value
@@ -470,7 +476,7 @@ func newApp(c *cli.Context) error {
 
 	cfg := config{
 		Name:   generateName(dir),
-		Remote: c.String("remote"),
+		Remote: getRemote(c.String("remote")),
 		Dir:    dir,
 		GoDir:  goDir,
 		Files:  files,

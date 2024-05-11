@@ -12,13 +12,22 @@
 
 JUPITER is a governance-oriented microservice framework, which is being used for years at [Douyu](https://www.douyu.com).
 
+## Online Demo
+
+[Jupiter Console (Juno)](https://jupiterconsole.douyu.com)
+
+```
+Username: admin
+Password: admin
+```
+
 ## Documentation
 
 See the [中文文档](http://jupiter.douyu.com/) for the Chinese documentation.
 
 ## Requirements
 
-- Go version >= 1.18
+- Go version >= 1.19
 - Docker
 
 ## Quick Start
@@ -34,13 +43,13 @@ go install github.com/douyu/jupiter/cmd/jupiter@latest
 jupiter new example-go
 cd example-go
 go mod tidy
-docker-compose -f deployment/docker-compose.yml up -d
+docker-compose -f test/docker-compose.yml up -d
 jupiter run -c cmd/exampleserver/.jupiter.toml
 ```
 
-More Example:
-
-- [Project Layout](https://github.com/douyu/jupiter-layout)
+## Learn More:
+- [Juno](https://github.com/douyu/juno): **Microservice Governance System** for jupiter
+- [Jupiter Layout](https://github.com/douyu/jupiter-layout): **Project Template** for jupiter
 - [Examples](https://github.com/douyu/jupiter-examples)
 
 ## Bugs and Feedback

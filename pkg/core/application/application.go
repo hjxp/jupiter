@@ -21,6 +21,7 @@ import (
 	"time"
 
 	//go-lint
+	_ "github.com/douyu/jupiter/pkg/conf/datasource/etcdv3"
 	_ "github.com/douyu/jupiter/pkg/conf/datasource/file"
 	_ "github.com/douyu/jupiter/pkg/conf/datasource/http"
 	_ "github.com/douyu/jupiter/pkg/core/autoproc"
@@ -83,12 +84,12 @@ func DefaultApp() *Application {
 	return app
 }
 
-//run hooks
+// run hooks
 func (app *Application) runHooks(stage hooks.Stage) {
 	hooks.Do(stage)
 }
 
-//RegisterHooks register a stage Hook
+// RegisterHooks register a stage Hook
 func (app *Application) RegisterHooks(stage hooks.Stage, fns ...func()) {
 	hooks.Register(stage, fns...)
 }
@@ -142,7 +143,7 @@ func (app *Application) initialize() {
 // 	return
 // }
 
-//Startup ..
+// Startup ..
 func (app *Application) Startup(fns ...func() error) error {
 	app.initialize()
 	// if err := app.startup(); err != nil {
@@ -257,7 +258,7 @@ func (app *Application) Run(servers ...server.Server) error {
 	return nil
 }
 
-//clean after app quit
+// clean after app quit
 func (app *Application) clean() {
 	_ = xlog.Default().Sync()
 	_ = xlog.Jupiter().Sync()
@@ -351,19 +352,6 @@ func (app *Application) waitSignals() {
 	})
 }
 
-// func (app *Application) initGovernor() error {
-// 	if app.isDisable(DisableDefaultGovernor) {
-// 		app.logger.Info("defualt governor disable", xlog.FieldMod(ecode.ModApp))
-// 		return nil
-// 	}
-
-// 	config := governor.StdConfig("governor")
-// 	if !config.Enable {
-// 		return nil
-// 	}
-// 	return app.Serve(config.Build())
-// }
-
 func (app *Application) startServers() error {
 	var eg errgroup.Group
 	var ctx, cancel = context.WithTimeout(context.Background(), 3*time.Second)
@@ -425,7 +413,7 @@ func (app *Application) startExecutors() error {
 	return executor.Run()
 }
 
-//parseFlags init
+// parseFlags init
 func (app *Application) parseFlags() error {
 	if app.isDisable(DisableParserFlag) {
 		app.logger.Info("parseFlags disable", xlog.FieldMod(ecode.ModApp))
@@ -443,7 +431,7 @@ func (app *Application) isDisable(d Disable) bool {
 	return b
 }
 
-//printBanner init
+// printBanner init
 func (app *Application) printBanner() error {
 	if app.HideBanner {
 		return nil

@@ -50,6 +50,8 @@ var (
 	// TypeLocalCache ...
 	TypeLocalCache = "localCache"
 
+	// TypeTableStore
+	TypeTableStore = "tstore"
 	// CodeJob
 	CodeJobSuccess = "ok"
 	// CodeJobFail ...
@@ -155,6 +157,13 @@ var (
 		Name:      "client_stats_gauge",
 		Labels:    []string{"type", "name", "index"},
 	}.Build()
+
+	// CustomizedHandleGauge 业务自定义 gauge.
+	CustomizedHandleGauge = NewGaugeVec("customized_handle_gauge", []string{"type"})
+	// CustomizedHandleCounter 业务自定义 counter.
+	CustomizedHandleCounter = NewCounterVec("customized_handle_total", []string{"type"})
+	// CustomizedHandleHistogram 业务自定义 histogram.
+	CustomizedHandleHistogram = NewHistogramVec("customized_handle_seconds", []string{"type"})
 )
 
 func init() {

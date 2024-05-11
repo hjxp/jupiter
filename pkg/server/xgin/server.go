@@ -22,6 +22,7 @@ import (
 	"github.com/douyu/jupiter/pkg/core/constant"
 	"github.com/douyu/jupiter/pkg/core/ecode"
 	"github.com/douyu/jupiter/pkg/server"
+	"github.com/douyu/jupiter/pkg/util/xnet"
 	"github.com/douyu/jupiter/pkg/xlog"
 	"github.com/gin-gonic/gin"
 )
@@ -48,7 +49,7 @@ func newServer(config *Config) *Server {
 	}
 }
 
-//Upgrade protocol to WebSocket
+// Upgrade protocol to WebSocket
 func (s *Server) Upgrade(ws *WebSocket) gin.IRoutes {
 	return s.GET(ws.Pattern, func(c *gin.Context) {
 		ws.Upgrade(c.Writer, c.Request)
@@ -88,14 +89,9 @@ func (s *Server) GracefulStop(ctx context.Context) error {
 
 // Info returns server info, used by governor and consumer balancer
 func (s *Server) Info() *server.ServiceInfo {
-	serviceAddr := s.listener.Addr().String()
-	if s.config.ServiceAddress != "" {
-		serviceAddr = s.config.ServiceAddress
-	}
-
 	info := server.ApplyOptions(
 		server.WithScheme("http"),
-		server.WithAddress(serviceAddr),
+		server.WithAddress(xnet.Address(s.listener)),
 		server.WithKind(constant.ServiceProvider),
 	)
 	// info.Name = info.Name + "." + ModName

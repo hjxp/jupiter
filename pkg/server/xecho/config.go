@@ -26,7 +26,7 @@ import (
 	"go.uber.org/zap"
 )
 
-//Config HTTP config
+// Config HTTP config
 type Config struct {
 	Host            string
 	Port            int
@@ -35,11 +35,9 @@ type Config struct {
 	DisableMetric   bool
 	DisableTrace    bool
 	DisableSentinel bool
-	// ServiceAddress service address in registry info, default to 'Host:Port'
-	ServiceAddress string
-	CertFile       string
-	PrivateFile    string
-	EnableTLS      bool
+	CertFile        string
+	PrivateFile     string
+	EnableTLS       bool
 
 	SlowQueryThresholdInMilli int64
 
@@ -108,7 +106,7 @@ func (config *Config) Build() (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	server.Use(recoverMiddleware(config.logger, config.SlowQueryThresholdInMilli))
+	server.Use(recoverMiddleware(config.SlowQueryThresholdInMilli))
 
 	if !config.DisableMetric {
 		server.Use(metricServerInterceptor())

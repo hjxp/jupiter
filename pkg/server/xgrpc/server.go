@@ -18,14 +18,17 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"io/ioutil"
 	"net"
 
 	"github.com/douyu/jupiter/pkg/core/constant"
 	"github.com/douyu/jupiter/pkg/server"
+	"github.com/douyu/jupiter/pkg/util/xnet"
 	"github.com/pkg/errors"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/reflection"
 )
 
 // Server ...
@@ -45,6 +48,37 @@ func newServer(config *Config) (*Server, error) {
 		[]grpc.UnaryServerInterceptor{defaultUnaryServerInterceptor(config.logger, config)},
 		config.unaryInterceptors...,
 	)
+
+	if !config.DisableTrace {
+		unaryInterceptors = append(
+			[]grpc.UnaryServerInterceptor{NewTraceUnaryServerInterceptor()},
+			unaryInterceptors...,
+		)
+
+		streamInterceptors = append(
+			[]grpc.StreamServerInterceptor{NewTraceStreamServerInterceptor()},
+			streamInterceptors...,
+		)
+	}
+
+	if !config.DisableMetric {
+		unaryInterceptors = append(
+			[]grpc.UnaryServerInterceptor{prometheusUnaryServerInterceptor},
+			unaryInterceptors...,
+		)
+
+		streamInterceptors = append(
+			[]grpc.StreamServerInterceptor{prometheusStreamServerInterceptor},
+			streamInterceptors...,
+		)
+	}
+
+	if !config.DisableSentinel {
+		unaryInterceptors = append(
+			[]grpc.UnaryServerInterceptor{NewSentinelUnaryServerInterceptor()},
+			unaryInterceptors...,
+		)
+	}
 
 	if config.EnableTLS {
 		cert, err := tls.LoadX509KeyPair(config.CertFile, config.PrivateFile)
@@ -84,6 +118,8 @@ func newServer(config *Config) (*Server, error) {
 	}
 	config.Port = listener.Addr().(*net.TCPAddr).Port
 
+	reflection.Register(newServer)
+
 	return &Server{
 		Server:   newServer,
 		listener: listener,
@@ -97,6 +133,14 @@ func (s *Server) Healthz() bool {
 
 // Server implements server.Server interface.
 func (s *Server) Serve() error {
+	// display grpc server method list
+	for fm, info := range s.GetServiceInfo() {
+		for _, method := range info.Methods {
+			fmt.Printf("[GRPC] \x1b[34m%8s\x1b[0m.%s\n", fm, method.Name)
+		}
+	}
+	// display grpc server addr
+	fmt.Printf("[GRPC] \x1b[33m%8s\x1b[0m %s\n", "Listen On", s.listener.Addr().String())
 	err := s.Server.Serve(s.listener)
 	return err
 }
@@ -117,14 +161,9 @@ func (s *Server) GracefulStop(ctx context.Context) error {
 
 // Info returns server info, used by governor and consumer balancer
 func (s *Server) Info() *server.ServiceInfo {
-	serviceAddress := s.listener.Addr().String()
-	if s.Config.ServiceAddress != "" {
-		serviceAddress = s.Config.ServiceAddress
-	}
-
 	info := server.ApplyOptions(
 		server.WithScheme("grpc"),
-		server.WithAddress(serviceAddress),
+		server.WithAddress(xnet.Address(s.listener)),
 		server.WithKind(constant.ServiceProvider),
 	)
 	return &info

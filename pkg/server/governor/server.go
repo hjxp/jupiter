@@ -7,6 +7,7 @@ import (
 
 	"github.com/douyu/jupiter/pkg/core/constant"
 	"github.com/douyu/jupiter/pkg/server"
+	"github.com/douyu/jupiter/pkg/util/xnet"
 	"github.com/douyu/jupiter/pkg/xlog"
 )
 
@@ -33,7 +34,7 @@ func newServer(config *Config) *Server {
 	}
 }
 
-//Serve ..
+// Serve ..
 func (s *Server) Serve() error {
 	err := s.Server.Serve(s.listener)
 	if err == http.ErrServerClosed {
@@ -43,12 +44,12 @@ func (s *Server) Serve() error {
 
 }
 
-//Stop ..
+// Stop ..
 func (s *Server) Stop() error {
 	return s.Server.Close()
 }
 
-//GracefulStop ..
+// GracefulStop ..
 func (s *Server) GracefulStop(ctx context.Context) error {
 	return s.Server.Shutdown(ctx)
 }
@@ -59,16 +60,12 @@ func (s *Server) Healthz() bool {
 	return true
 }
 
-//Info ..
+// Info ..
 func (s *Server) Info() *server.ServiceInfo {
-	serviceAddr := s.listener.Addr().String()
-	if s.Config.ServiceAddress != "" {
-		serviceAddr = s.Config.ServiceAddress
-	}
 
 	info := server.ApplyOptions(
 		server.WithScheme("govern"),
-		server.WithAddress(serviceAddr),
+		server.WithAddress(xnet.Address(s.listener)),
 		server.WithKind(constant.ServiceGovernor),
 	)
 	// info.Name = info.Name + "." + ModName
